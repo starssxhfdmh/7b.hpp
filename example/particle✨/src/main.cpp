@@ -68,15 +68,20 @@ public:
 private:
   void SpawnParticles(float x, float y, int count) {
     for (int i = 0; i < count; ++i) {
-      float angle = static_cast<float>(rand()) / RAND_MAX * 6.28318f;
-      float speed = 50.0f + static_cast<float>(rand()) / RAND_MAX * 150.0f;
+      float angle =
+          static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 6.28318f;
+      float speed = 50.0f + static_cast<float>(rand()) /
+                                static_cast<float>(RAND_MAX) * 150.0f;
 
       Particle p;
       p.pos = {x, y};
       p.vel = {std::cos(angle) * speed, std::sin(angle) * speed};
-      p.hue = hue_offset_ + static_cast<float>(rand()) / RAND_MAX * 60.0f;
-      p.radius = 5.0f + static_cast<float>(rand()) / RAND_MAX * 15.0f;
-      p.life = 1.0f + static_cast<float>(rand()) / RAND_MAX * 1.5f;
+      p.hue = hue_offset_ +
+              static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 60.0f;
+      p.radius = 5.0f + static_cast<float>(rand()) /
+                            static_cast<float>(RAND_MAX) * 15.0f;
+      p.life = 1.0f +
+               static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 1.5f;
       p.max_life = p.life;
 
       particles_.push_back(p);
