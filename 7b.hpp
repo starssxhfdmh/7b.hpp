@@ -52,6 +52,7 @@
 #ifndef SEVENB_HPP_
 #define SEVENB_HPP_
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -62,6 +63,7 @@
 #include <initializer_list>
 #include <iostream>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -81,6 +83,11 @@
 /// @brief Windows compatibility typedef for process ID.
 typedef HANDLE pid_t;
 #define SB_INVALID_PID INVALID_HANDLE_VALUE
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#define SB_INVALID_PID (-1)
 #else
 #include <sys/wait.h>
 #include <unistd.h>
@@ -91,11 +98,7 @@ typedef HANDLE pid_t;
 /// @brief Default C++ compiler to use.
 /// @details Override by defining before including 7b.hpp.
 #ifndef SB_CXX
-#ifdef _WIN32
 #define SB_CXX "g++"
-#else
-#define SB_CXX "g++"
-#endif
 #endif
 
 /// @def SB_CACHE_DIR
@@ -127,6 +130,14 @@ namespace sb {
 
 class Cmd;
 class Project;
+
+/// @enum OutputType
+/// @brief Type of build output.
+enum class OutputType {
+  Executable, ///< Build an executable
+  StaticLib,  ///< Build a static library (.a/.lib)
+  SharedLib   ///< Build a shared library (.so/.dll/.dylib)
+};
 
 /// @namespace sb::detail
 /// @brief Internal implementation details.
@@ -310,6 +321,76 @@ inline std::string DecodeHexToPath(const std::string &hex) {
   return result;
 }
 
+/// @brief Parses #include directives from a source file.
+/// @param source Path to source file.
+/// @param include_dirs List of include directories to search.
+/// @return Set of resolved header file paths.
+inline std::unordered_set<std::string>
+ParseIncludes(const std::filesystem::path &source,
+              const std::vector<std::string> &include_dirs) {
+  std::unordered_set<std::string> headers;
+  std::ifstream file(source);
+  if (!file) {
+    return headers;
+  }
+
+  std::regex include_regex(R"(^\s*#\s*include\s*["<]([^">]+)[">])");
+  std::string line;
+  auto source_dir = source.parent_path();
+
+  while (std::getline(file, line)) {
+    std::smatch match;
+    if (std::regex_search(line, match, include_regex)) {
+      std::string include_name = match[1].str();
+
+      // Check relative to source file
+      auto candidate = source_dir / include_name;
+      if (std::filesystem::exists(candidate)) {
+        headers.insert(std::filesystem::absolute(candidate).string());
+        continue;
+      }
+
+      // Check include directories
+      for (const auto &dir : include_dirs) {
+        candidate = std::filesystem::path(dir) / include_name;
+        if (std::filesystem::exists(candidate)) {
+          headers.insert(std::filesystem::absolute(candidate).string());
+          break;
+        }
+      }
+    }
+  }
+
+  return headers;
+}
+
+/// @brief Recursively collects all header dependencies.
+/// @param source Path to source file.
+/// @param include_dirs Include directories.
+/// @param visited Already visited files (to avoid cycles).
+/// @return Set of all header paths.
+inline std::unordered_set<std::string>
+CollectAllHeaders(const std::filesystem::path &source,
+                  const std::vector<std::string> &include_dirs,
+                  std::unordered_set<std::string> &visited) {
+  std::unordered_set<std::string> all_headers;
+  std::string abs_path = std::filesystem::absolute(source).string();
+
+  if (visited.count(abs_path)) {
+    return all_headers;
+  }
+  visited.insert(abs_path);
+
+  auto direct_headers = ParseIncludes(source, include_dirs);
+  for (const auto &header : direct_headers) {
+    all_headers.insert(header);
+    auto nested = CollectAllHeaders(header, include_dirs, visited);
+    all_headers.insert(nested.begin(), nested.end());
+  }
+
+  return all_headers;
+}
+
 } // namespace detail
 
 /// @namespace sb::platform
@@ -347,6 +428,14 @@ inline bool CreateDirs(const std::filesystem::path &path) {
   std::error_code ec;
   std::filesystem::create_directories(path, ec);
   return !ec;
+}
+
+/// @brief Removes a file.
+/// @param path Path to the file.
+/// @return True on success, false on failure.
+inline bool RemoveFile(const std::filesystem::path &path) {
+  std::error_code ec;
+  return std::filesystem::remove(path, ec) || !ec;
 }
 
 #ifdef _WIN32
@@ -523,19 +612,34 @@ inline bool WaitAll(const std::vector<pid_t> &pids) {
   bool all_ok = true;
 
 #ifdef _WIN32
-  for (HANDLE handle : pids) {
-    if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
-      continue;
+  // Filter valid handles
+  std::vector<HANDLE> valid_handles;
+  valid_handles.reserve(pids.size());
+  for (HANDLE h : pids) {
+    if (h != INVALID_HANDLE_VALUE && h != nullptr) {
+      valid_handles.push_back(h);
+    }
+  }
+
+  if (!valid_handles.empty()) {
+    // Wait for all at once (max 64 handles per call)
+    size_t offset = 0;
+    while (offset < valid_handles.size()) {
+      DWORD count = static_cast<DWORD>(std::min(valid_handles.size() - offset,
+                                                size_t(MAXIMUM_WAIT_OBJECTS)));
+      WaitForMultipleObjects(count, valid_handles.data() + offset, TRUE,
+                             INFINITE);
+      offset += count;
     }
 
-    WaitForSingleObject(handle, INFINITE);
-
-    DWORD exit_code = 0;
-    if (!GetExitCodeProcess(handle, &exit_code) || exit_code != 0) {
-      all_ok = false;
+    // Check exit codes
+    for (HANDLE h : valid_handles) {
+      DWORD exit_code = 0;
+      if (!GetExitCodeProcess(h, &exit_code) || exit_code != 0) {
+        all_ok = false;
+      }
+      CloseHandle(h);
     }
-
-    CloseHandle(handle);
   }
 #else
   for (pid_t pid : pids) {
@@ -565,9 +669,20 @@ inline int GetCpuCount() {
 /// @return Absolute path to the executable, or empty path on error.
 inline std::filesystem::path GetExecutablePath() {
 #ifdef _WIN32
-  char buf[MAX_PATH];
-  DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+  wchar_t buf[MAX_PATH];
+  DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
   if (len > 0 && len < MAX_PATH) {
+    return std::filesystem::path(buf);
+  }
+  return std::filesystem::path();
+#elif defined(__APPLE__)
+  char buf[4096];
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) == 0) {
+    char real_path[PATH_MAX];
+    if (realpath(buf, real_path)) {
+      return std::filesystem::path(real_path);
+    }
     return std::filesystem::path(buf);
   }
   return std::filesystem::path();
@@ -672,6 +787,67 @@ inline const char *GetExeExtension() {
 #endif
 }
 
+/// @brief Gets the static library extension for the current platform.
+/// @return ".lib" on Windows, ".a" on Unix.
+inline const char *GetStaticLibExtension() {
+#ifdef _WIN32
+  return ".lib";
+#else
+  return ".a";
+#endif
+}
+
+/// @brief Gets the shared library extension for the current platform.
+/// @return ".dll" on Windows, ".dylib" on macOS, ".so" on Linux.
+inline const char *GetSharedLibExtension() {
+#ifdef _WIN32
+  return ".dll";
+#elif defined(__APPLE__)
+  return ".dylib";
+#else
+  return ".so";
+#endif
+}
+
+/// @brief Gets the static library prefix for the current platform.
+/// @return "" on Windows, "lib" on Unix.
+inline const char *GetStaticLibPrefix() {
+#ifdef _WIN32
+  return "";
+#else
+  return "lib";
+#endif
+}
+
+/// @brief Writes a response file for long command lines.
+/// @param path Path to response file.
+/// @param args Arguments to write.
+/// @return True on success.
+inline bool WriteResponseFile(const std::filesystem::path &path,
+                              const std::vector<std::string> &args) {
+  std::ofstream file(path);
+  if (!file) {
+    return false;
+  }
+  for (const auto &arg : args) {
+    if (arg.find(' ') != std::string::npos ||
+        arg.find('"') != std::string::npos) {
+      file << '"';
+      for (char c : arg) {
+        if (c == '"' || c == '\\') {
+          file << '\\';
+        }
+        file << c;
+      }
+      file << '"';
+    } else {
+      file << arg;
+    }
+    file << '\n';
+  }
+  return file.good();
+}
+
 } // namespace platform
 
 /// @class Cache
@@ -719,13 +895,16 @@ public:
 
   /// @brief Checks if a source file needs to be recompiled.
   /// @param source Path to the source file.
+  /// @param include_dirs Include directories for header dependency check.
   /// @return True if recompilation is needed, false if up to date.
   /// @details A file needs rebuild if:
   ///          - Its content hash differs from cached hash
+  ///          - Any of its headers have changed
   ///          - Its hash is not in the cache
   ///          - The corresponding object file doesn't exist
-  bool NeedsRebuild(const std::filesystem::path &source) const {
-    auto hash = detail::HashFile(source);
+  bool NeedsRebuild(const std::filesystem::path &source,
+                    const std::vector<std::string> &include_dirs) const {
+    auto hash = ComputeSourceHash(source, include_dirs);
     if (!hash) {
       return true;
     }
@@ -755,16 +934,19 @@ public:
     // in different directories (e.g., src/main.cpp and lib/main.cpp)
     std::string path_str = std::filesystem::absolute(source).string();
     uint64_t path_hash = detail::HashString(path_str);
+    // Use 12 characters for reduced collision probability
     std::string name = source.stem().string() + "_" +
-                       detail::HashToHex(path_hash).substr(0, 8) + ".o";
+                       detail::HashToHex(path_hash).substr(0, 12) + ".o";
     return obj_dir_ / name;
   }
 
   /// @brief Updates the cached hash for a source file.
   /// @param source Path to the source file.
+  /// @param include_dirs Include directories.
   /// @details Call this after successfully compiling a source file.
-  void Update(const std::filesystem::path &source) {
-    auto hash = detail::HashFile(source);
+  void Update(const std::filesystem::path &source,
+              const std::vector<std::string> &include_dirs) {
+    auto hash = ComputeSourceHash(source, include_dirs);
     if (hash) {
       hashes_[source.string()] = *hash;
     }
@@ -806,7 +988,8 @@ public:
       bool is_orphan = true;
       for (const auto &used : used_sources_) {
         auto obj = GetObjectPath(used);
-        if (std::filesystem::equivalent(entry.path(), obj, ec) && !ec) {
+        std::error_code eq_ec;
+        if (std::filesystem::equivalent(entry.path(), obj, eq_ec) && !eq_ec) {
           is_orphan = false;
           break;
         }
@@ -829,7 +1012,43 @@ public:
     return !ec;
   }
 
+  /// @brief Gets the object directory path.
+  /// @return Path to object file directory.
+  const std::filesystem::path &GetObjDir() const { return obj_dir_; }
+
 private:
+  /// @brief Computes combined hash of source and all its headers.
+  /// @param source Source file path.
+  /// @param include_dirs Include directories.
+  /// @return Combined hash or nullopt on error.
+  std::optional<uint64_t>
+  ComputeSourceHash(const std::filesystem::path &source,
+                    const std::vector<std::string> &include_dirs) const {
+    auto source_hash = detail::HashFile(source);
+    if (!source_hash) {
+      return std::nullopt;
+    }
+
+    uint64_t combined = *source_hash;
+
+    std::unordered_set<std::string> visited;
+    auto headers = detail::CollectAllHeaders(source, include_dirs, visited);
+
+    // Sort for deterministic ordering
+    std::vector<std::string> sorted_headers(headers.begin(), headers.end());
+    std::sort(sorted_headers.begin(), sorted_headers.end());
+
+    for (const auto &header : sorted_headers) {
+      auto header_hash = detail::HashFile(header);
+      if (header_hash) {
+        // Combine hashes using XOR with rotation
+        combined ^= (*header_hash << 1) | (*header_hash >> 63);
+      }
+    }
+
+    return combined;
+  }
+
   /// @brief Loads cache state from disk.
   void Load() {
     std::ifstream file(cache_file_, std::ios::binary);
@@ -1324,6 +1543,14 @@ public:
     return *this;
   }
 
+  /// @brief Sets the output type.
+  /// @param type Output type (Executable, StaticLib, SharedLib).
+  /// @return Reference to this Project for chaining.
+  Project &Type(OutputType type) {
+    output_type_ = type;
+    return *this;
+  }
+
   /// @brief Overrides default debug build flags.
   /// @param flags New debug flags.
   /// @return Reference to this Project for chaining.
@@ -1385,6 +1612,14 @@ public:
       return false;
     }
 
+    // Validate source files exist
+    for (const auto &source : sources_) {
+      if (!platform::FileExists(source)) {
+        Error("Source file not found: " + source.string());
+        return false;
+      }
+    }
+
     Cache cache(SB_CACHE_DIR, release_);
     if (!cache.Init()) {
       return false;
@@ -1409,7 +1644,7 @@ public:
       auto obj_path = cache.GetObjectPath(source);
       all_objects.push_back(obj_path);
 
-      if (!cache.NeedsRebuild(source)) {
+      if (!cache.NeedsRebuild(source, include_dirs_)) {
         Verbose("Skipping " + source.string() + " (up to date)");
         continue;
       }
@@ -1449,6 +1684,11 @@ public:
           }
         }
 
+        // Add -fPIC for shared libraries
+        if (output_type_ == OutputType::SharedLib) {
+          cmd.Arg("-fPIC");
+        }
+
         for (const auto &inc : include_dirs_) {
           cmd.Arg("-I" + inc);
         }
@@ -1467,53 +1707,42 @@ public:
         batch.push_back(&job);
       }
 
-      if (!platform::WaitAll(pids)) {
+      bool batch_ok = platform::WaitAll(pids);
+
+      // Update cache for successfully compiled files before checking errors
+      if (batch_ok) {
+        for (auto *job : batch) {
+          cache.Update(job->source, include_dirs_);
+          ++compiled_count;
+        }
+      } else {
         Error("Compilation failed");
         return false;
       }
-
-      for (auto *job : batch) {
-        cache.Update(job->source);
-        ++compiled_count;
-      }
     }
 
+    // Determine output filename
     std::string output = output_.empty() ? name_ : output_;
-
-#ifdef _WIN32
-    if (output.length() < 4 || output.substr(output.length() - 4) != ".exe") {
-      output += ".exe";
-    }
-#endif
+    output = ApplyOutputExtension(output);
 
     bool output_exists = platform::FileExists(output);
 
     if (compiled_count > 0 || !output_exists) {
-      Verbose("Linking " + output);
+      bool link_ok = false;
 
-      Cmd cmd;
-      cmd.Arg(SB_CXX);
-
-      for (const auto &obj : all_objects) {
-        cmd.Arg(obj.string());
+      switch (output_type_) {
+      case OutputType::Executable:
+        link_ok = LinkExecutable(output, all_objects, cache);
+        break;
+      case OutputType::StaticLib:
+        link_ok = LinkStaticLib(output, all_objects, cache);
+        break;
+      case OutputType::SharedLib:
+        link_ok = LinkSharedLib(output, all_objects, cache);
+        break;
       }
 
-      cmd.Arg("-o").Arg(output);
-
-      for (const auto &dir : lib_dirs_) {
-        cmd.Arg("-L" + dir);
-      }
-
-      for (const auto &flag : link_flags_) {
-        cmd.Arg(flag);
-      }
-
-      for (const auto &lib : libs_) {
-        cmd.Arg("-l" + lib);
-      }
-
-      if (!cmd.Run()) {
-        Error("Failed to link " + output);
+      if (!link_ok) {
         return false;
       }
     }
@@ -1526,15 +1755,205 @@ public:
     return true;
   }
 
-  /// @brief Cleans the build cache for this project.
+  /// @brief Cleans the build cache and output files.
   /// @return True on successful clean, false on failure.
   bool Clean() {
     Log("Cleaning " + name_ + "...");
+
+    // Remove output file
+    std::string output = output_.empty() ? name_ : output_;
+    output = ApplyOutputExtension(output);
+    if (platform::FileExists(output)) {
+      Verbose("Removing " + output);
+      platform::RemoveFile(output);
+    }
+
     Cache cache(SB_CACHE_DIR, release_);
     return cache.Clean();
   }
 
 private:
+  /// @brief Applies the correct extension to output filename.
+  /// @param name Base output name.
+  /// @return Output name with correct extension.
+  std::string ApplyOutputExtension(const std::string &name) const {
+    std::string result = name;
+
+    switch (output_type_) {
+    case OutputType::Executable: {
+#ifdef _WIN32
+      if (result.length() < 4 || result.substr(result.length() - 4) != ".exe") {
+        result += ".exe";
+      }
+#endif
+      break;
+    }
+    case OutputType::StaticLib: {
+      std::string prefix = platform::GetStaticLibPrefix();
+      std::string ext = platform::GetStaticLibExtension();
+      if (!prefix.empty() && result.substr(0, prefix.length()) != prefix) {
+        result = prefix + result;
+      }
+      if (result.length() < ext.length() ||
+          result.substr(result.length() - ext.length()) != ext) {
+        result += ext;
+      }
+      break;
+    }
+    case OutputType::SharedLib: {
+      std::string ext = platform::GetSharedLibExtension();
+#ifndef _WIN32
+      if (result.substr(0, 3) != "lib") {
+        result = "lib" + result;
+      }
+#endif
+      if (result.length() < ext.length() ||
+          result.substr(result.length() - ext.length()) != ext) {
+        result += ext;
+      }
+      break;
+    }
+    }
+
+    return result;
+  }
+
+  /// @brief Links an executable.
+  /// @param output Output path.
+  /// @param objects Object files.
+  /// @param cache Build cache.
+  /// @return True on success.
+  bool LinkExecutable(const std::string &output,
+                      const std::vector<std::filesystem::path> &objects,
+                      const Cache &cache) {
+    Verbose("Linking " + output);
+
+    std::vector<std::string> link_args;
+    for (const auto &obj : objects) {
+      link_args.push_back(obj.string());
+    }
+
+    // Use response file for large projects on Windows
+#ifdef _WIN32
+    std::filesystem::path rsp_file = cache.GetObjDir() / "link.rsp";
+    bool use_rsp = link_args.size() > 50;
+
+    if (use_rsp) {
+      if (!platform::WriteResponseFile(rsp_file, link_args)) {
+        Warn("Failed to write response file, using direct args");
+        use_rsp = false;
+      }
+    }
+#endif
+
+    Cmd cmd;
+    cmd.Arg(SB_CXX);
+
+#ifdef _WIN32
+    if (use_rsp) {
+      cmd.Arg("@" + rsp_file.string());
+    } else {
+      cmd.Args(link_args);
+    }
+#else
+    (void)cache;
+    cmd.Args(link_args);
+#endif
+
+    cmd.Arg("-o").Arg(output);
+
+    for (const auto &dir : lib_dirs_) {
+      cmd.Arg("-L" + dir);
+    }
+
+    for (const auto &flag : link_flags_) {
+      cmd.Arg(flag);
+    }
+
+    for (const auto &lib : libs_) {
+      cmd.Arg("-l" + lib);
+    }
+
+    if (!cmd.Run()) {
+      Error("Failed to link " + output);
+      return false;
+    }
+
+    return true;
+  }
+
+  /// @brief Creates a static library.
+  /// @param output Output path.
+  /// @param objects Object files.
+  /// @param cache Build cache (unused).
+  /// @return True on success.
+  bool LinkStaticLib(const std::string &output,
+                     const std::vector<std::filesystem::path> &objects,
+                     [[maybe_unused]] const Cache &cache) {
+    Verbose("Creating static library " + output);
+
+    // Remove existing library first
+    platform::RemoveFile(output);
+
+    Cmd cmd;
+    cmd.Arg("ar").Arg("rcs").Arg(output);
+
+    for (const auto &obj : objects) {
+      cmd.Arg(obj.string());
+    }
+
+    if (!cmd.Run()) {
+      Error("Failed to create static library " + output);
+      return false;
+    }
+
+    return true;
+  }
+
+  /// @brief Creates a shared library.
+  /// @param output Output path.
+  /// @param objects Object files.
+  /// @param cache Build cache.
+  /// @return True on success.
+  bool LinkSharedLib(const std::string &output,
+                     const std::vector<std::filesystem::path> &objects,
+                     [[maybe_unused]] const Cache &cache) {
+    Verbose("Creating shared library " + output);
+
+    Cmd cmd;
+    cmd.Arg(SB_CXX);
+    cmd.Arg("-shared");
+
+#ifdef __APPLE__
+    cmd.Arg("-dynamiclib");
+#endif
+
+    for (const auto &obj : objects) {
+      cmd.Arg(obj.string());
+    }
+
+    cmd.Arg("-o").Arg(output);
+
+    for (const auto &dir : lib_dirs_) {
+      cmd.Arg("-L" + dir);
+    }
+
+    for (const auto &flag : link_flags_) {
+      cmd.Arg(flag);
+    }
+
+    for (const auto &lib : libs_) {
+      cmd.Arg("-l" + lib);
+    }
+
+    if (!cmd.Run()) {
+      Error("Failed to create shared library " + output);
+      return false;
+    }
+
+    return true;
+  }
+
   std::string name_;                           ///< Project name
   std::vector<std::filesystem::path> sources_; ///< Source files
   std::vector<std::string> include_dirs_;      ///< Include directories
@@ -1549,6 +1968,7 @@ private:
   std::string standard_ = "c++17";             ///< C++ standard version
   int jobs_ = 0;                               ///< Parallel job count
   bool release_ = false;                       ///< Release build mode
+  OutputType output_type_ = OutputType::Executable; ///< Output type
 };
 
 /// @def SB_INIT
