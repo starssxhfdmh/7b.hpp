@@ -1,0 +1,65 @@
+# Doxyfile for 7b - using doxygen-awesome-css
+
+# Project
+PROJECT_NAME           = "7b"
+PROJECT_NUMBER         = "1.0.1"
+PROJECT_BRIEF          = "A minimal, header-only C++ build system"
+PROJECT_LOGO           =
+OUTPUT_DIRECTORY       = docs
+
+# Input
+INPUT                  = 7b.hpp README.md
+USE_MDFILE_AS_MAINPAGE = README.md
+RECURSIVE              = NO
+FILE_PATTERNS          = *.hpp *.md
+
+# Build
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+BUILTIN_STL_SUPPORT    = YES
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+VERBATIM_HEADERS       = YES
+ALPHABETICAL_INDEX     = YES
+
+# HTML Output - Doxygen Awesome
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_COLORSTYLE        = LIGHT
+HTML_COLORSTYLE_HUE    = 209
+HTML_COLORSTYLE_SAT    = 255
+HTML_COLORSTYLE_GAMMA  = 113
+GENERATE_TREEVIEW      = YES
+TREEVIEW_WIDTH         = 300
+FULL_SIDEBAR           = NO
+DISABLE_INDEX          = NO
+HTML_EXTRA_STYLESHEET  = doxygen-awesome-css/doxygen-awesome.css \
+                         doxygen-awesome-css/doxygen-awesome-sidebar-only.css \
+                         doxygen-awesome-css/doxygen-awesome-sidebar-only-darkmode-toggle.css
+HTML_EXTRA_FILES       = doxygen-awesome-css/doxygen-awesome-darkmode-toggle.js \
+                         doxygen-awesome-css/doxygen-awesome-fragment-copy-button.js \
+                         doxygen-awesome-css/doxygen-awesome-paragraph-link.js \
+                         doxygen-awesome-css/doxygen-awesome-interactive-toc.js
+HTML_HEADER            = header.html
+HTML_TIMESTAMP         = NO
+SEARCHENGINE           = YES
+
+# Other Output (disabled)
+GENERATE_LATEX         = NO
+GENERATE_RTF           = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+
+# Graphs (disabled for speed)
+HAVE_DOT               = NO
+
+# Preprocessor
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = _WIN32 \
+                         SB_VERBOSE
