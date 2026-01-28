@@ -67,23 +67,35 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
-#include <process.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 /// @brief Windows compatibility typedef for process ID.
-typedef int pid_t;
+typedef HANDLE pid_t;
+#define SB_INVALID_PID INVALID_HANDLE_VALUE
 #else
 #include <sys/wait.h>
 #include <unistd.h>
+#define SB_INVALID_PID (-1)
 #endif
 
 /// @def SB_CXX
 /// @brief Default C++ compiler to use.
 /// @details Override by defining before including 7b.hpp.
 #ifndef SB_CXX
+#ifdef _WIN32
 #define SB_CXX "g++"
+#else
+#define SB_CXX "g++"
+#endif
 #endif
 
 /// @def SB_CACHE_DIR
@@ -209,16 +221,23 @@ inline uint64_t Fnv1aHash(const uint8_t *data, size_t len) {
 /// @param path Path to the file to hash.
 /// @return The hash value, or std::nullopt if the file cannot be read.
 inline std::optional<uint64_t> HashFile(const std::filesystem::path &path) {
-  std::ifstream file(path, std::ios::binary);
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file) {
     return std::nullopt;
   }
 
-  std::ostringstream ss;
-  ss << file.rdbuf();
-  std::string content = ss.str();
-  return Fnv1aHash(reinterpret_cast<const uint8_t *>(content.data()),
-                   content.size());
+  auto size = file.tellg();
+  if (size <= 0) {
+    return Fnv1aHash(nullptr, 0);
+  }
+
+  file.seekg(0, std::ios::beg);
+  std::vector<uint8_t> buffer(static_cast<size_t>(size));
+  if (!file.read(reinterpret_cast<char *>(buffer.data()), size)) {
+    return std::nullopt;
+  }
+
+  return Fnv1aHash(buffer.data(), buffer.size());
 }
 
 /// @brief Converts a 64-bit hash to a hexadecimal string.
@@ -236,6 +255,59 @@ inline std::string HashToHex(uint64_t hash) {
 /// @return The computed 64-bit hash value.
 inline uint64_t HashString(const std::string &str) {
   return Fnv1aHash(reinterpret_cast<const uint8_t *>(str.data()), str.size());
+}
+
+/// @brief Encodes a string to hex for safe cache storage.
+/// @param str The string to encode.
+/// @return Hex-encoded string.
+inline std::string EncodePathToHex(const std::string &str) {
+  std::string result;
+  result.reserve(str.size() * 2);
+  for (unsigned char c : str) {
+    char buf[3];
+    std::snprintf(buf, sizeof(buf), "%02x", c);
+    result += buf;
+  }
+  return result;
+}
+
+/// @brief Decodes a hex string back to original path.
+/// @param hex The hex string to decode.
+/// @return Decoded string, or empty on error.
+inline std::string DecodeHexToPath(const std::string &hex) {
+  if (hex.length() % 2 != 0) {
+    return "";
+  }
+
+  std::string result;
+  result.reserve(hex.length() / 2);
+
+  for (size_t i = 0; i < hex.length(); i += 2) {
+    unsigned int byte = 0;
+    char h = hex[i];
+    char l = hex[i + 1];
+
+    if (h >= '0' && h <= '9')
+      byte = static_cast<unsigned int>(h - '0') << 4;
+    else if (h >= 'a' && h <= 'f')
+      byte = static_cast<unsigned int>(h - 'a' + 10) << 4;
+    else if (h >= 'A' && h <= 'F')
+      byte = static_cast<unsigned int>(h - 'A' + 10) << 4;
+    else
+      return "";
+
+    if (l >= '0' && l <= '9')
+      byte |= static_cast<unsigned int>(l - '0');
+    else if (l >= 'a' && l <= 'f')
+      byte |= static_cast<unsigned int>(l - 'a' + 10);
+    else if (l >= 'A' && l <= 'F')
+      byte |= static_cast<unsigned int>(l - 'A' + 10);
+    else
+      return "";
+
+    result += static_cast<char>(byte);
+  }
+  return result;
 }
 
 } // namespace detail
@@ -256,17 +328,16 @@ inline std::optional<int64_t> GetModTime(const std::filesystem::path &path) {
   if (ec) {
     return std::nullopt;
   }
-  auto sctp = std::chrono::time_point_cast<std::chrono::nanoseconds>(
-      ftime - std::filesystem::file_time_type::clock::now() +
-      std::chrono::system_clock::now());
-  return sctp.time_since_epoch().count();
+  auto duration = ftime.time_since_epoch();
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
 }
 
 /// @brief Checks if a file exists at the given path.
 /// @param path Path to check.
 /// @return True if the file exists, false otherwise.
 inline bool FileExists(const std::filesystem::path &path) {
-  return std::filesystem::exists(path);
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) && !ec;
 }
 
 /// @brief Creates a directory and all parent directories.
@@ -278,27 +349,98 @@ inline bool CreateDirs(const std::filesystem::path &path) {
   return !ec;
 }
 
+#ifdef _WIN32
+/// @brief Quotes a command line argument for Windows.
+/// @param arg The argument to quote.
+/// @return Properly quoted argument.
+inline std::string QuoteArgWin(const std::string &arg) {
+  if (arg.empty()) {
+    return "\"\"";
+  }
+
+  bool needs_quote = false;
+  for (char c : arg) {
+    if (c == ' ' || c == '\t' || c == '"' || c == '\\') {
+      needs_quote = true;
+      break;
+    }
+  }
+
+  if (!needs_quote) {
+    return arg;
+  }
+
+  std::string result = "\"";
+  size_t backslashes = 0;
+
+  for (char c : arg) {
+    if (c == '\\') {
+      ++backslashes;
+    } else if (c == '"') {
+      result.append(backslashes * 2 + 1, '\\');
+      result += '"';
+      backslashes = 0;
+    } else {
+      result.append(backslashes, '\\');
+      result += c;
+      backslashes = 0;
+    }
+  }
+
+  result.append(backslashes * 2, '\\');
+  result += '"';
+  return result;
+}
+
+/// @brief Builds a command line string for Windows.
+/// @param args Vector of arguments.
+/// @return Properly formatted command line string.
+inline std::string BuildCommandLineWin(const std::vector<std::string> &args) {
+  std::string cmd;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i > 0)
+      cmd += ' ';
+    cmd += QuoteArgWin(args[i]);
+  }
+  return cmd;
+}
+#endif
+
 /// @brief Runs a command synchronously and waits for completion.
 /// @param args Command and arguments as a vector of strings.
 /// @return Exit code of the command, or -1 on error.
-/// @details On Windows, uses system(). On Unix, uses fork/exec.
+/// @details On Windows, uses CreateProcess. On Unix, uses fork/exec.
 inline int RunCommand(const std::vector<std::string> &args) {
   if (args.empty()) {
     return -1;
   }
 
 #ifdef _WIN32
-  std::string cmd;
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (i > 0)
-      cmd += " ";
-    if (args[i].find(' ') != std::string::npos) {
-      cmd += "\"" + args[i] + "\"";
-    } else {
-      cmd += args[i];
-    }
+  std::string cmd = BuildCommandLineWin(args);
+
+  STARTUPINFOA si = {};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+  PROCESS_INFORMATION pi = {};
+
+  if (!CreateProcessA(nullptr, const_cast<char *>(cmd.c_str()), nullptr,
+                      nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+    return -1;
   }
-  return std::system(cmd.c_str());
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+
+  DWORD exit_code = 0;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  return static_cast<int>(exit_code);
 #else
   pid_t pid = fork();
   if (pid == -1) {
@@ -307,6 +449,7 @@ inline int RunCommand(const std::vector<std::string> &args) {
 
   if (pid == 0) {
     std::vector<char *> argv;
+    argv.reserve(args.size() + 1);
     for (const auto &arg : args) {
       argv.push_back(const_cast<char *>(arg.c_str()));
     }
@@ -330,18 +473,37 @@ inline int RunCommand(const std::vector<std::string> &args) {
 
 /// @brief Runs a command asynchronously without waiting.
 /// @param args Command and arguments as a vector of strings.
-/// @return Process ID of the spawned process, or -1 on error.
-/// @note On Windows, this falls back to synchronous execution and returns -1.
+/// @return Process ID/handle of the spawned process, or invalid handle on
+/// error.
 inline pid_t RunCommandAsync(const std::vector<std::string> &args) {
+  if (args.empty()) {
+    return SB_INVALID_PID;
+  }
+
 #ifdef _WIN32
-  // Windows fallback: run synchronously
-  // Returns -1 to indicate no async process was created
-  RunCommand(args);
-  return -1;
+  std::string cmd = BuildCommandLineWin(args);
+
+  STARTUPINFOA si = {};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+  PROCESS_INFORMATION pi = {};
+
+  if (!CreateProcessA(nullptr, const_cast<char *>(cmd.c_str()), nullptr,
+                      nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+    return SB_INVALID_PID;
+  }
+
+  CloseHandle(pi.hThread);
+  return pi.hProcess;
 #else
   pid_t pid = fork();
   if (pid == 0) {
     std::vector<char *> argv;
+    argv.reserve(args.size() + 1);
     for (const auto &arg : args) {
       argv.push_back(const_cast<char *>(arg.c_str()));
     }
@@ -357,17 +519,28 @@ inline pid_t RunCommandAsync(const std::vector<std::string> &args) {
 /// @brief Waits for multiple processes to complete.
 /// @param pids Vector of process IDs to wait for.
 /// @return True if all processes exited successfully (code 0), false otherwise.
-/// @note On Windows, always returns true since RunCommandAsync runs
-/// synchronously.
 inline bool WaitAll(const std::vector<pid_t> &pids) {
-#ifdef _WIN32
-  (void)pids; // Suppress unused parameter warning
-  return true;
-#else
   bool all_ok = true;
+
+#ifdef _WIN32
+  for (HANDLE handle : pids) {
+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
+      continue;
+    }
+
+    WaitForSingleObject(handle, INFINITE);
+
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(handle, &exit_code) || exit_code != 0) {
+      all_ok = false;
+    }
+
+    CloseHandle(handle);
+  }
+#else
   for (pid_t pid : pids) {
     if (pid <= 0) {
-      continue; // Skip invalid pids
+      continue;
     }
     int status;
     if (waitpid(pid, &status, 0) == -1) {
@@ -376,8 +549,9 @@ inline bool WaitAll(const std::vector<pid_t> &pids) {
       all_ok = false;
     }
   }
-  return all_ok;
 #endif
+
+  return all_ok;
 }
 
 /// @brief Gets the number of available CPU cores.
@@ -411,26 +585,31 @@ inline std::filesystem::path GetExecutablePath() {
 /// @brief Replaces the current process with a new executable.
 /// @param args Command and arguments for the new process.
 /// @note This function does not return on success.
-/// @note On Windows, this uses system() and exit() instead of exec().
+/// @note On Windows, this uses CreateProcess and exit() instead of exec().
 inline void Exec(const std::vector<std::string> &args) {
   if (args.empty())
     return;
 
 #ifdef _WIN32
-  std::string cmd;
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (i > 0)
-      cmd += " ";
-    if (args[i].find(' ') != std::string::npos) {
-      cmd += "\"" + args[i] + "\"";
-    } else {
-      cmd += args[i];
-    }
+  std::string cmd = BuildCommandLineWin(args);
+
+  STARTUPINFOA si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+
+  if (CreateProcessA(nullptr, const_cast<char *>(cmd.c_str()), nullptr, nullptr,
+                     TRUE, 0, nullptr, nullptr, &si, &pi)) {
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exit_code = 0;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    std::exit(static_cast<int>(exit_code));
   }
-  int result = std::system(cmd.c_str());
-  std::exit(result);
+  std::exit(1);
 #else
   std::vector<char *> argv;
+  argv.reserve(args.size() + 1);
   for (const auto &arg : args) {
     argv.push_back(const_cast<char *>(arg.c_str()));
   }
@@ -480,6 +659,16 @@ inline const char *GetStderrRedirect() {
   return "2>NUL";
 #else
   return "2>/dev/null";
+#endif
+}
+
+/// @brief Gets the executable extension for the current platform.
+/// @return ".exe" on Windows, "" on Unix.
+inline const char *GetExeExtension() {
+#ifdef _WIN32
+  return ".exe";
+#else
+  return "";
 #endif
 }
 
@@ -564,7 +753,7 @@ public:
   GetObjectPath(const std::filesystem::path &source) const {
     // Hash the full path to ensure uniqueness for files with the same name
     // in different directories (e.g., src/main.cpp and lib/main.cpp)
-    std::string path_str = source.string();
+    std::string path_str = std::filesystem::absolute(source).string();
     uint64_t path_hash = detail::HashString(path_str);
     std::string name = source.stem().string() + "_" +
                        detail::HashToHex(path_hash).substr(0, 8) + ".o";
@@ -581,17 +770,52 @@ public:
     }
   }
 
+  /// @brief Marks a source file as part of current build.
+  /// @param source Path to the source file.
+  void MarkUsed(const std::filesystem::path &source) {
+    used_sources_.insert(source.string());
+  }
+
   /// @brief Saves the cache state to disk.
   /// @note Writes to .cache file in the object directory.
   void Save() const {
-    std::ofstream file(cache_file_);
+    std::ofstream file(cache_file_, std::ios::binary);
     if (!file) {
       Warn("Failed to save cache");
       return;
     }
 
     for (const auto &[path, hash] : hashes_) {
-      file << path << " " << detail::HashToHex(hash) << "\n";
+      std::string encoded_path = detail::EncodePathToHex(path);
+      file << encoded_path << " " << detail::HashToHex(hash) << "\n";
+    }
+  }
+
+  /// @brief Removes orphan object files that are no longer needed.
+  void CleanOrphans() {
+    std::error_code ec;
+    for (const auto &entry :
+         std::filesystem::directory_iterator(obj_dir_, ec)) {
+      if (ec)
+        break;
+      if (!entry.is_regular_file())
+        continue;
+      if (entry.path().extension() != ".o")
+        continue;
+
+      bool is_orphan = true;
+      for (const auto &used : used_sources_) {
+        auto obj = GetObjectPath(used);
+        if (std::filesystem::equivalent(entry.path(), obj, ec) && !ec) {
+          is_orphan = false;
+          break;
+        }
+      }
+
+      if (is_orphan) {
+        Verbose("Removing orphan: " + entry.path().string());
+        std::filesystem::remove(entry.path(), ec);
+      }
     }
   }
 
@@ -601,13 +825,14 @@ public:
     std::error_code ec;
     std::filesystem::remove_all(cache_dir_, ec);
     hashes_.clear();
+    used_sources_.clear();
     return !ec;
   }
 
 private:
   /// @brief Loads cache state from disk.
   void Load() {
-    std::ifstream file(cache_file_);
+    std::ifstream file(cache_file_, std::ios::binary);
     if (!file) {
       return;
     }
@@ -615,33 +840,40 @@ private:
     std::string line;
     while (std::getline(file, line)) {
       size_t space = line.rfind(' ');
-      if (space != std::string::npos && space > 0) {
-        std::string path = line.substr(0, space);
-        std::string hash_hex = line.substr(space + 1);
+      if (space == std::string::npos || space == 0) {
+        continue;
+      }
 
-        // Validate hash hex string length
-        if (hash_hex.length() != 16) {
-          continue;
-        }
+      std::string encoded_path = line.substr(0, space);
+      std::string hash_hex = line.substr(space + 1);
 
-        uint64_t hash = 0;
-        bool valid = true;
-        for (char c : hash_hex) {
-          hash <<= 4;
-          if (c >= '0' && c <= '9') {
-            hash |= static_cast<uint64_t>(c - '0');
-          } else if (c >= 'a' && c <= 'f') {
-            hash |= static_cast<uint64_t>(c - 'a' + 10);
-          } else if (c >= 'A' && c <= 'F') {
-            hash |= static_cast<uint64_t>(c - 'A' + 10);
-          } else {
-            valid = false;
-            break;
-          }
+      std::string path = detail::DecodeHexToPath(encoded_path);
+      if (path.empty()) {
+        continue;
+      }
+
+      // Validate hash hex string length
+      if (hash_hex.length() != 16) {
+        continue;
+      }
+
+      uint64_t hash = 0;
+      bool valid = true;
+      for (char c : hash_hex) {
+        hash <<= 4;
+        if (c >= '0' && c <= '9') {
+          hash |= static_cast<uint64_t>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+          hash |= static_cast<uint64_t>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+          hash |= static_cast<uint64_t>(c - 'A' + 10);
+        } else {
+          valid = false;
+          break;
         }
-        if (valid) {
-          hashes_[path] = hash;
-        }
+      }
+      if (valid) {
+        hashes_[path] = hash;
       }
     }
   }
@@ -650,7 +882,8 @@ private:
   std::filesystem::path obj_dir_;    ///< Object file directory
   std::filesystem::path cache_file_; ///< Path to .cache file
   std::unordered_map<std::string, uint64_t>
-      hashes_; ///< Source path to hash map
+      hashes_;                                   ///< Source path to hash map
+  std::unordered_set<std::string> used_sources_; ///< Currently used sources
 };
 
 /// @class Cmd
@@ -682,6 +915,7 @@ public:
   /// @param args The arguments to add.
   /// @return Reference to this Cmd for chaining.
   Cmd &Args(std::initializer_list<std::string_view> args) {
+    args_.reserve(args_.size() + args.size());
     for (auto arg : args) {
       args_.emplace_back(arg);
     }
@@ -692,6 +926,7 @@ public:
   /// @param args The arguments to add.
   /// @return Reference to this Cmd for chaining.
   Cmd &Args(const std::vector<std::string> &args) {
+    args_.reserve(args_.size() + args.size());
     for (const auto &arg : args) {
       args_.push_back(arg);
     }
@@ -728,8 +963,15 @@ public:
     for (size_t i = 0; i < args_.size(); ++i) {
       if (i > 0)
         result += " ";
-      if (args_[i].find(' ') != std::string::npos) {
-        result += "\"" + args_[i] + "\"";
+      if (args_[i].find(' ') != std::string::npos ||
+          args_[i].find('"') != std::string::npos) {
+        result += "\"";
+        for (char c : args_[i]) {
+          if (c == '"' || c == '\\')
+            result += '\\';
+          result += c;
+        }
+        result += "\"";
       } else {
         result += args_[i];
       }
@@ -834,6 +1076,7 @@ inline void Init(int argc, char **argv, const char *source_file) {
 
   info.executable_path = platform::GetExecutablePath();
 
+  info.original_args.reserve(static_cast<size_t>(argc));
   for (int i = 0; i < argc; ++i) {
     info.original_args.push_back(argv[i]);
   }
@@ -875,6 +1118,7 @@ public:
   /// @param files Source file paths to add.
   /// @return Reference to this Project for chaining.
   Project &Sources(std::initializer_list<std::string_view> files) {
+    sources_.reserve(sources_.size() + files.size());
     for (auto file : files) {
       sources_.emplace_back(file);
     }
@@ -885,6 +1129,7 @@ public:
   /// @param files Source file paths to add.
   /// @return Reference to this Project for chaining.
   Project &Sources(const std::vector<std::string> &files) {
+    sources_.reserve(sources_.size() + files.size());
     for (const auto &file : files) {
       sources_.emplace_back(file);
     }
@@ -911,6 +1156,7 @@ public:
   /// @param dirs Include directory paths.
   /// @return Reference to this Project for chaining.
   Project &IncludeDirs(std::initializer_list<std::string_view> dirs) {
+    include_dirs_.reserve(include_dirs_.size() + dirs.size());
     for (auto dir : dirs) {
       include_dirs_.emplace_back(dir);
     }
@@ -929,6 +1175,7 @@ public:
   /// @param dirs Library directory paths.
   /// @return Reference to this Project for chaining.
   Project &LibDirs(std::initializer_list<std::string_view> dirs) {
+    lib_dirs_.reserve(lib_dirs_.size() + dirs.size());
     for (auto dir : dirs) {
       lib_dirs_.emplace_back(dir);
     }
@@ -947,6 +1194,7 @@ public:
   /// @param defs Definitions to add.
   /// @return Reference to this Project for chaining.
   Project &Defines(std::initializer_list<std::string_view> defs) {
+    defines_.reserve(defines_.size() + defs.size());
     for (auto def : defs) {
       defines_.emplace_back(def);
     }
@@ -965,6 +1213,7 @@ public:
   /// @param libs Library names to link.
   /// @return Reference to this Project for chaining.
   Project &LinkLibs(std::initializer_list<std::string_view> libs) {
+    libs_.reserve(libs_.size() + libs.size());
     for (auto lib : libs) {
       libs_.emplace_back(lib);
     }
@@ -1031,6 +1280,7 @@ public:
   /// @param flags Compiler flags to add.
   /// @return Reference to this Project for chaining.
   Project &CxxFlags(std::initializer_list<std::string_view> flags) {
+    cxx_flags_.reserve(cxx_flags_.size() + flags.size());
     for (auto flag : flags) {
       cxx_flags_.emplace_back(flag);
     }
@@ -1049,6 +1299,7 @@ public:
   /// @param flags Linker flags to add.
   /// @return Reference to this Project for chaining.
   Project &LinkFlags(std::initializer_list<std::string_view> flags) {
+    link_flags_.reserve(link_flags_.size() + flags.size());
     for (auto flag : flags) {
       link_flags_.emplace_back(flag);
     }
@@ -1078,6 +1329,7 @@ public:
   /// @return Reference to this Project for chaining.
   Project &DebugFlags(std::initializer_list<std::string_view> flags) {
     debug_flags_.clear();
+    debug_flags_.reserve(flags.size());
     for (auto flag : flags) {
       debug_flags_.emplace_back(flag);
     }
@@ -1089,6 +1341,7 @@ public:
   /// @return Reference to this Project for chaining.
   Project &ReleaseFlags(std::initializer_list<std::string_view> flags) {
     release_flags_.clear();
+    release_flags_.reserve(flags.size());
     for (auto flag : flags) {
       release_flags_.emplace_back(flag);
     }
@@ -1148,7 +1401,11 @@ public:
     std::vector<CompileJob> jobs_to_run;
     std::vector<std::filesystem::path> all_objects;
 
+    jobs_to_run.reserve(sources_.size());
+    all_objects.reserve(sources_.size());
+
     for (const auto &source : sources_) {
+      cache.MarkUsed(source);
       auto obj_path = cache.GetObjectPath(source);
       all_objects.push_back(obj_path);
 
@@ -1166,6 +1423,9 @@ public:
     while (i < jobs_to_run.size()) {
       std::vector<pid_t> pids;
       std::vector<CompileJob *> batch;
+
+      pids.reserve(static_cast<size_t>(job_count));
+      batch.reserve(static_cast<size_t>(job_count));
 
       for (int j = 0; j < job_count && i < jobs_to_run.size(); ++j, ++i) {
         auto &job = jobs_to_run[i];
@@ -1219,6 +1479,13 @@ public:
     }
 
     std::string output = output_.empty() ? name_ : output_;
+
+#ifdef _WIN32
+    if (output.length() < 4 || output.substr(output.length() - 4) != ".exe") {
+      output += ".exe";
+    }
+#endif
+
     bool output_exists = platform::FileExists(output);
 
     if (compiled_count > 0 || !output_exists) {
@@ -1251,6 +1518,7 @@ public:
       }
     }
 
+    cache.CleanOrphans();
     cache.Save();
     Log("Built: " + output + " (" + std::to_string(compiled_count) + "/" +
         std::to_string(sources_.size()) + " compiled)");
