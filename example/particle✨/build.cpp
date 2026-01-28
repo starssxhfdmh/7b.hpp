@@ -6,33 +6,39 @@
 int main(int argc, char *argv[]) {
   SB_INIT(argc, argv);
 
-  // Check for clean command
-  for (int i = 1; i < argc; ++i) {
-    if (std::string(argv[i]) == "clean") {
-      sb::Project("particle_demo").Clean();
-      return 0;
-    }
-    if (std::string(argv[i]) == "release") {
+  // Create project configuration
+  auto project =
       sb::Project("particle_demo")
           .Sources({"src/main.cpp", "src/core/engine.cpp",
                     "src/graphics/renderer.cpp", "src/input/input.cpp"})
-          .IncludeDirs({"src"})
+          .IncludeDir("src")
           .Pkg("sdl2")
-          .Standard("c++17")
-          .Release()
-          .Build();
+          .Standard("c++17");
+
+  // Check for commands
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+
+    if (arg == "clean") {
+      project.Clean();
+      return 0;
+    }
+
+    if (arg == "release") {
+      project.Release();
+    }
+
+    if (arg == "commands" || arg == "compdb") {
+      project.GenerateCompileCommands();
       return 0;
     }
   }
 
-  // Default debug build
-  sb::Project("particle_demo")
-      .Sources({"src/main.cpp", "src/core/engine.cpp",
-                "src/graphics/renderer.cpp", "src/input/input.cpp"})
-      .IncludeDirs({"src"})
-      .Pkg("sdl2")
-      .Standard("c++17")
-      .Build();
+  // Generate compile_commands.json automatically before building
+  project.GenerateCompileCommands();
+
+  // Build
+  project.Build();
 
   return 0;
 }

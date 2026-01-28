@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 1.1.1
+/// @version 1.2.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -61,6 +61,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <regex>
@@ -85,10 +86,12 @@ typedef HANDLE pid_t;
 #define SB_INVALID_PID INVALID_HANDLE_VALUE
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #define SB_INVALID_PID (-1)
 #else
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #define SB_INVALID_PID (-1)
@@ -691,6 +694,90 @@ inline bool WaitAll(const std::vector<pid_t> &pids) {
   return all_ok;
 }
 
+/// @brief Checks if a process has completed (non-blocking).
+/// @param pid Process ID to check.
+/// @param exit_code Output parameter for exit code if process completed.
+/// @return True if process has completed, false if still running.
+inline bool IsProcessDone(pid_t pid, int &exit_code) {
+#ifdef _WIN32
+  if (pid == INVALID_HANDLE_VALUE || pid == nullptr) {
+    exit_code = -1;
+    return true;
+  }
+  DWORD result = WaitForSingleObject(pid, 0);
+  if (result == WAIT_OBJECT_0) {
+    DWORD code = 0;
+    GetExitCodeProcess(pid, &code);
+    exit_code = static_cast<int>(code);
+    return true;
+  }
+  return false;
+#else
+  if (pid <= 0) {
+    exit_code = -1;
+    return true;
+  }
+  int status;
+  pid_t result = waitpid(pid, &status, WNOHANG);
+  if (result == pid) {
+    if (WIFEXITED(status)) {
+      exit_code = WEXITSTATUS(status);
+    } else {
+      exit_code = -1;
+    }
+    return true;
+  }
+  return false;
+#endif
+}
+
+/// @brief Waits for all processes with progress callback.
+/// @param pids Vector of process IDs.
+/// @param on_complete Callback called when each process completes.
+/// @return True if all processes exited successfully (code 0).
+template <typename Callback>
+inline bool WaitAllWithProgress(std::vector<pid_t> &pids,
+                                Callback on_complete) {
+  bool all_ok = true;
+  std::vector<bool> completed(pids.size(), false);
+  size_t remaining = pids.size();
+
+  while (remaining > 0) {
+    bool any_completed = false;
+
+    for (size_t i = 0; i < pids.size(); ++i) {
+      if (completed[i])
+        continue;
+
+      int exit_code = 0;
+      if (IsProcessDone(pids[i], exit_code)) {
+        completed[i] = true;
+        --remaining;
+        any_completed = true;
+
+#ifdef _WIN32
+        if (pids[i] != INVALID_HANDLE_VALUE && pids[i] != nullptr) {
+          CloseHandle(pids[i]);
+        }
+#endif
+
+        if (exit_code != 0) {
+          all_ok = false;
+        }
+
+        on_complete(i, exit_code == 0);
+      }
+    }
+
+    // If no process completed this iteration, sleep briefly to avoid busy-wait
+    if (!any_completed && remaining > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  return all_ok;
+}
+
 /// @brief Gets the number of available CPU cores.
 /// @return Number of CPU cores, minimum 1.
 inline int GetCpuCount() {
@@ -882,7 +969,145 @@ inline bool WriteResponseFile(const std::filesystem::path &path,
   return file.good();
 }
 
+/// @brief Gets the terminal width in columns.
+/// @return Terminal width, or 80 as fallback.
+inline int GetTerminalWidth() {
+#ifdef _WIN32
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+    return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+  }
+  return 80;
+#else
+  struct winsize ws;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+    return ws.ws_col;
+  }
+  return 80;
+#endif
+}
+
+/// @brief Checks if stdout is a TTY (terminal).
+/// @return True if stdout is a terminal, false otherwise.
+inline bool IsTty() {
+#ifdef _WIN32
+  return _isatty(_fileno(stdout)) != 0;
+#else
+  return isatty(STDOUT_FILENO) != 0;
+#endif
+}
+
 } // namespace platform
+
+namespace detail {
+
+/// @class ProgressBar
+/// @brief Visual progress indicator for build operations.
+/// @details Displays a dynamic progress bar at the current cursor position
+///          that adapts to terminal width and shows currently compiling files.
+class ProgressBar {
+public:
+  /// @brief Creates a progress bar.
+  /// @param total Total number of items to process.
+  explicit ProgressBar(size_t total)
+      : total_(total), completed_(0), is_tty_(platform::IsTty()),
+        enabled_(is_tty_ && total > 0) {
+    if (enabled_) {
+      // Hide cursor during progress
+      std::cout << "\033[?25l" << std::flush;
+    }
+  }
+
+  /// @brief Destructor, ensures cursor is restored.
+  ~ProgressBar() { Finish(); }
+
+  /// @brief Updates the progress bar display.
+  /// @param completed Number of completed items.
+  /// @param current_files List of currently processing file names.
+  void Update(size_t completed, const std::vector<std::string> &current_files) {
+    if (!enabled_)
+      return;
+
+    completed_ = completed;
+    int width = platform::GetTerminalWidth();
+
+    // Calculate percentage
+    int percent =
+        total_ > 0 ? static_cast<int>((completed_ * 100) / total_) : 0;
+
+    // Build file list string
+    std::string files_str;
+    for (size_t i = 0; i < current_files.size(); ++i) {
+      if (i > 0)
+        files_str += ", ";
+      // Extract just filename from path
+      auto pos = current_files[i].find_last_of("/\\");
+      if (pos != std::string::npos) {
+        files_str += current_files[i].substr(pos + 1);
+      } else {
+        files_str += current_files[i];
+      }
+    }
+
+    // Layout: [████░░░░░░ XX%] files...
+    // Minimum: 7 chars for "[] XX% " + some bar
+    int fixed_chars = 8; // "[] XXX% "
+    int max_bar_width = std::min(40, (width - 20) / 2);
+    int bar_width = std::max(10, max_bar_width);
+    int max_files_width = width - bar_width - fixed_chars - 2;
+
+    // Truncate files string if needed
+    if (static_cast<int>(files_str.length()) > max_files_width) {
+      if (max_files_width > 3) {
+        files_str = files_str.substr(0, max_files_width - 3) + "...";
+      } else {
+        files_str = "...";
+      }
+    }
+
+    // Calculate filled portion
+    int filled = (bar_width * static_cast<int>(completed_)) /
+                 static_cast<int>(total_ > 0 ? total_ : 1);
+    filled = std::min(filled, bar_width);
+
+    // Build the bar
+    std::string bar;
+    bar.reserve(bar_width);
+    for (int i = 0; i < bar_width; ++i) {
+      if (i < filled) {
+        bar += "\xe2\x96\x88"; // █ (UTF-8 full block)
+      } else {
+        bar += " ";
+      }
+    }
+
+    // Move to beginning of line and clear it
+    std::cout << "\r\033[K";
+
+    // Print progress bar with color
+    std::cout << kColorGreen << bar << kColorCyan << std::setw(3) << percent
+              << "% " << kColorReset << files_str << std::flush;
+  }
+
+  /// @brief Clears the progress bar and restores cursor.
+  void Finish() {
+    if (!enabled_ || finished_)
+      return;
+
+    finished_ = true;
+    // Clear the line and show cursor
+    std::cout << "\r\033[K\033[?25h" << std::flush;
+  }
+
+private:
+  size_t total_;
+  size_t completed_;
+  bool is_tty_;
+  bool enabled_;
+  bool finished_ = false;
+};
+
+} // namespace detail
 
 /// @class Cache
 /// @brief Manages incremental build cache for tracking file changes.
@@ -1656,6 +1881,90 @@ public:
     return *this;
   }
 
+  /// @brief Generates compile_commands.json for IDE/clangd support.
+  /// @param output_path Path to write the JSON file (default: current dir).
+  /// @return Reference to this Project for chaining.
+  /// @details Creates a compilation database compatible with clangd,
+  /// clang-tidy,
+  ///          and other tools that use compile_commands.json format.
+  Project &GenerateCompileCommands(
+      const std::filesystem::path &output_path = "compile_commands.json") {
+    if (sources_.empty()) {
+      Warn("No sources to generate compile_commands.json");
+      return *this;
+    }
+
+    std::ofstream file(output_path);
+    if (!file) {
+      Error("Failed to create compile_commands.json");
+      return *this;
+    }
+
+    std::filesystem::path cwd = std::filesystem::current_path();
+    std::string cwd_str = cwd.string();
+
+    file << "[\n";
+
+    for (size_t idx = 0; idx < sources_.size(); ++idx) {
+      const auto &source = sources_[idx];
+      std::filesystem::path abs_source = std::filesystem::absolute(source);
+
+      // Build the command
+      std::string command = SB_CXX;
+      command += " -std=" + standard_;
+
+      // Add build flags
+      if (release_) {
+        for (const auto &flag :
+             (release_flags_.empty()
+                  ? std::vector<std::string>{SB_RELEASE_FLAGS}
+                  : release_flags_)) {
+          command += " " + flag;
+        }
+      } else {
+        for (const auto &flag :
+             (debug_flags_.empty() ? std::vector<std::string>{SB_DEBUG_FLAGS}
+                                   : debug_flags_)) {
+          command += " " + flag;
+        }
+      }
+
+      // Add include directories
+      for (const auto &inc : include_dirs_) {
+        std::filesystem::path abs_inc = std::filesystem::absolute(inc);
+        command += " -I" + abs_inc.string();
+      }
+
+      // Add defines
+      for (const auto &def : defines_) {
+        command += " -D" + def;
+      }
+
+      // Add custom compiler flags
+      for (const auto &flag : cxx_flags_) {
+        command += " " + flag;
+      }
+
+      command += " -c " + abs_source.string();
+
+      // Write JSON entry
+      file << "  {\n";
+      file << "    \"directory\": \"" << EscapeJson(cwd_str) << "\",\n";
+      file << "    \"command\": \"" << EscapeJson(command) << "\",\n";
+      file << "    \"file\": \"" << EscapeJson(abs_source.string()) << "\"\n";
+      file << "  }";
+
+      if (idx < sources_.size() - 1) {
+        file << ",";
+      }
+      file << "\n";
+    }
+
+    file << "]\n";
+
+    return *this;
+  }
+
   /// @brief Builds the project.
   /// @return True on successful build, false on failure.
   /// @details Performs the following steps:
@@ -1713,16 +2022,25 @@ public:
     size_t compiled_count = 0;
     size_t i = 0;
 
+    // Create progress bar for compilation
+    detail::ProgressBar progress(jobs_to_run.size());
+
     while (i < jobs_to_run.size()) {
       std::vector<pid_t> pids;
       std::vector<CompileJob *> batch;
+      std::vector<std::string> batch_names;
 
       pids.reserve(static_cast<size_t>(job_count));
       batch.reserve(static_cast<size_t>(job_count));
+      batch_names.reserve(static_cast<size_t>(job_count));
 
       for (int j = 0; j < job_count && i < jobs_to_run.size(); ++j, ++i) {
         auto &job = jobs_to_run[i];
-        Verbose("Compiling " + job.source.string());
+
+        // Log individual file compilation
+        std::string src_name = job.source.filename().string();
+        std::string obj_name = job.obj.filename().string();
+        Log("Compiling " + src_name + " \xe2\x86\x92 " + obj_name);
 
         Cmd cmd;
         cmd.Arg(SB_CXX);
@@ -1763,26 +2081,54 @@ public:
 
         pid_t pid = cmd.RunAsync();
         if (pid == SB_INVALID_PID) {
+          progress.Finish();
           Error("Failed to start compilation for: " + job.source.string());
           return false;
         }
         pids.push_back(pid);
         batch.push_back(&job);
+        batch_names.push_back(job.source.string());
       }
 
-      bool batch_ok = platform::WaitAll(pids);
+      // Show initial progress with files being compiled
+      progress.Update(compiled_count, batch_names);
 
-      // Update cache for successfully compiled files before checking errors
-      if (batch_ok) {
-        for (auto *job : batch) {
-          cache.Update(job->source, include_dirs_);
-          ++compiled_count;
-        }
-      } else {
+      // Track which files are still compiling
+      std::vector<std::string> in_progress = batch_names;
+
+      // Wait with per-file progress updates
+      bool batch_ok =
+          platform::WaitAllWithProgress(pids, [&](size_t idx, bool success) {
+            if (success) {
+              cache.Update(batch[idx]->source, include_dirs_);
+              ++compiled_count;
+            }
+
+            // Remove completed file from in_progress list
+            if (idx < in_progress.size()) {
+              in_progress[idx] = ""; // Mark as done
+            }
+
+            // Build list of files still compiling
+            std::vector<std::string> still_compiling;
+            for (const auto &name : in_progress) {
+              if (!name.empty()) {
+                still_compiling.push_back(name);
+              }
+            }
+
+            progress.Update(compiled_count, still_compiling);
+          });
+
+      if (!batch_ok) {
+        progress.Finish();
         Error("Compilation failed");
         return false;
       }
     }
+
+    // Finish progress bar before linking
+    progress.Finish();
 
     // Determine output filename
     std::string output = output_.empty() ? name_ : output_;
@@ -1812,8 +2158,6 @@ public:
 
     cache.CleanOrphans();
     cache.Save();
-    Log("Built: " + output + " (" + std::to_string(compiled_count) + "/" +
-        std::to_string(sources_.size()) + " compiled)");
     Log("Done!");
     return true;
   }
@@ -1836,6 +2180,37 @@ public:
   }
 
 private:
+  /// @brief Escapes a string for JSON output.
+  /// @param str The string to escape.
+  /// @return JSON-safe escaped string.
+  static std::string EscapeJson(const std::string &str) {
+    std::string result;
+    result.reserve(str.size() + 16);
+    for (char c : str) {
+      switch (c) {
+      case '"':
+        result += "\\\"";
+        break;
+      case '\\':
+        result += "\\\\";
+        break;
+      case '\n':
+        result += "\\n";
+        break;
+      case '\r':
+        result += "\\r";
+        break;
+      case '\t':
+        result += "\\t";
+        break;
+      default:
+        result += c;
+        break;
+      }
+    }
+    return result;
+  }
+
   /// @brief Applies the correct extension to output filename.
   /// @param name Base output name.
   /// @return Output name with correct extension.
