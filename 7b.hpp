@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 1.0.0
+/// @version 1.0.1
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -72,6 +72,8 @@
 #ifdef _WIN32
 #include <process.h>
 #include <windows.h>
+/// @brief Windows compatibility typedef for process ID.
+typedef int pid_t;
 #else
 #include <sys/wait.h>
 #include <unistd.h>
@@ -229,6 +231,13 @@ inline std::string HashToHex(uint64_t hash) {
   return std::string(buf);
 }
 
+/// @brief Computes hash of a string.
+/// @param str The string to hash.
+/// @return The computed 64-bit hash value.
+inline uint64_t HashString(const std::string &str) {
+  return Fnv1aHash(reinterpret_cast<const uint8_t *>(str.data()), str.size());
+}
+
 } // namespace detail
 
 /// @namespace sb::platform
@@ -321,12 +330,14 @@ inline int RunCommand(const std::vector<std::string> &args) {
 
 /// @brief Runs a command asynchronously without waiting.
 /// @param args Command and arguments as a vector of strings.
-/// @return Process ID of the spawned process, or 0 on Windows.
-/// @note On Windows, this falls back to synchronous execution.
+/// @return Process ID of the spawned process, or -1 on error.
+/// @note On Windows, this falls back to synchronous execution and returns -1.
 inline pid_t RunCommandAsync(const std::vector<std::string> &args) {
 #ifdef _WIN32
+  // Windows fallback: run synchronously
+  // Returns -1 to indicate no async process was created
   RunCommand(args);
-  return 0;
+  return -1;
 #else
   pid_t pid = fork();
   if (pid == 0) {
@@ -346,12 +357,18 @@ inline pid_t RunCommandAsync(const std::vector<std::string> &args) {
 /// @brief Waits for multiple processes to complete.
 /// @param pids Vector of process IDs to wait for.
 /// @return True if all processes exited successfully (code 0), false otherwise.
+/// @note On Windows, always returns true since RunCommandAsync runs
+/// synchronously.
 inline bool WaitAll(const std::vector<pid_t> &pids) {
 #ifdef _WIN32
+  (void)pids; // Suppress unused parameter warning
   return true;
 #else
   bool all_ok = true;
   for (pid_t pid : pids) {
+    if (pid <= 0) {
+      continue; // Skip invalid pids
+    }
     int status;
     if (waitpid(pid, &status, 0) == -1) {
       all_ok = false;
@@ -375,8 +392,11 @@ inline int GetCpuCount() {
 inline std::filesystem::path GetExecutablePath() {
 #ifdef _WIN32
   char buf[MAX_PATH];
-  GetModuleFileNameA(nullptr, buf, MAX_PATH);
-  return std::filesystem::path(buf);
+  DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+  if (len > 0 && len < MAX_PATH) {
+    return std::filesystem::path(buf);
+  }
+  return std::filesystem::path();
 #else
   char buf[4096];
   ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -446,10 +466,21 @@ inline std::string RunCapture(const std::string &cmd) {
   pclose(pipe);
 #endif
 
-  while (!result.empty() && std::isspace(result.back())) {
+  while (!result.empty() &&
+         std::isspace(static_cast<unsigned char>(result.back()))) {
     result.pop_back();
   }
   return result;
+}
+
+/// @brief Gets the platform-specific null device for stderr redirection.
+/// @return "2>NUL" on Windows, "2>/dev/null" on Unix.
+inline const char *GetStderrRedirect() {
+#ifdef _WIN32
+  return "2>NUL";
+#else
+  return "2>/dev/null";
+#endif
 }
 
 } // namespace platform
@@ -467,12 +498,12 @@ inline std::string RunCapture(const std::string &cmd) {
 /// @code
 /// .7b/
 /// ├── debug/
-/// │   ├── main.cpp.o
-/// │   ├── utils.cpp.o
+/// │   ├── main_a1b2c3d4.o
+/// │   ├── utils_e5f6g7h8.o
 /// │   └── .cache
 /// └── release/
-///     ├── main.cpp.o
-///     ├── utils.cpp.o
+///     ├── main_a1b2c3d4.o
+///     ├── utils_e5f6g7h8.o
 ///     └── .cache
 /// @endcode
 class Cache {
@@ -527,9 +558,16 @@ public:
   /// @brief Gets the object file path for a source file.
   /// @param source Path to the source file.
   /// @return Path where the object file should be stored.
+  /// @details Uses a hash of the full source path to avoid collisions
+  ///          when multiple source files have the same name.
   std::filesystem::path
   GetObjectPath(const std::filesystem::path &source) const {
-    std::string name = source.filename().string() + ".o";
+    // Hash the full path to ensure uniqueness for files with the same name
+    // in different directories (e.g., src/main.cpp and lib/main.cpp)
+    std::string path_str = source.string();
+    uint64_t path_hash = detail::HashString(path_str);
+    std::string name = source.stem().string() + "_" +
+                       detail::HashToHex(path_hash).substr(0, 8) + ".o";
     return obj_dir_ / name;
   }
 
@@ -581,18 +619,29 @@ private:
         std::string path = line.substr(0, space);
         std::string hash_hex = line.substr(space + 1);
 
+        // Validate hash hex string length
+        if (hash_hex.length() != 16) {
+          continue;
+        }
+
         uint64_t hash = 0;
+        bool valid = true;
         for (char c : hash_hex) {
           hash <<= 4;
           if (c >= '0' && c <= '9') {
-            hash |= (c - '0');
+            hash |= static_cast<uint64_t>(c - '0');
           } else if (c >= 'a' && c <= 'f') {
-            hash |= (c - 'a' + 10);
+            hash |= static_cast<uint64_t>(c - 'a' + 10);
           } else if (c >= 'A' && c <= 'F') {
-            hash |= (c - 'A' + 10);
+            hash |= static_cast<uint64_t>(c - 'A' + 10);
+          } else {
+            valid = false;
+            break;
           }
         }
-        hashes_[path] = hash;
+        if (valid) {
+          hashes_[path] = hash;
+        }
       }
     }
   }
@@ -665,7 +714,7 @@ public:
   }
 
   /// @brief Runs the command asynchronously.
-  /// @return Process ID of the spawned process.
+  /// @return Process ID of the spawned process, or -1 on Windows.
   /// @see platform::WaitAll() to wait for completion.
   pid_t RunAsync() {
     Verbose("$ " + ToString());
@@ -748,6 +797,11 @@ inline void RebuildAndExec(const BuildInfo &info) {
   cmd.Arg(info.source_path.string());
   cmd.Arg("-o").Arg(info.executable_path.string());
 
+#ifndef _WIN32
+  // Add pthread support on Unix-like systems
+  cmd.Arg("-pthread");
+#endif
+
   if (!cmd.Run()) {
     Error("Failed to rebuild build executable");
     std::exit(1);
@@ -827,6 +881,16 @@ public:
     return *this;
   }
 
+  /// @brief Adds multiple source files from a vector.
+  /// @param files Source file paths to add.
+  /// @return Reference to this Project for chaining.
+  Project &Sources(const std::vector<std::string> &files) {
+    for (const auto &file : files) {
+      sources_.emplace_back(file);
+    }
+    return *this;
+  }
+
   /// @brief Adds a single source file.
   /// @param file Source file path to add.
   /// @return Reference to this Project for chaining.
@@ -879,6 +943,16 @@ public:
     return *this;
   }
 
+  /// @brief Adds multiple preprocessor definitions.
+  /// @param defs Definitions to add.
+  /// @return Reference to this Project for chaining.
+  Project &Defines(std::initializer_list<std::string_view> defs) {
+    for (auto def : defs) {
+      defines_.emplace_back(def);
+    }
+    return *this;
+  }
+
   /// @brief Adds a library to link (-l flag).
   /// @param lib Library name (without lib prefix or extension).
   /// @return Reference to this Project for chaining.
@@ -887,10 +961,21 @@ public:
     return *this;
   }
 
+  /// @brief Adds multiple libraries to link.
+  /// @param libs Library names to link.
+  /// @return Reference to this Project for chaining.
+  Project &LinkLibs(std::initializer_list<std::string_view> libs) {
+    for (auto lib : libs) {
+      libs_.emplace_back(lib);
+    }
+    return *this;
+  }
+
   /// @brief Links a library statically.
   /// @param lib Library name to link statically.
   /// @return Reference to this Project for chaining.
   /// @details Uses linker flags to force static linking (.a instead of .so).
+  /// @note This uses GCC/ld specific flags and may not work on all platforms.
   Project &LinkLibStatic(std::string_view lib) {
     link_flags_.emplace_back("-Wl,-Bstatic");
     link_flags_.emplace_back("-l" + std::string(lib));
@@ -905,9 +990,10 @@ public:
   ///          Shows a warning if the package is not found.
   Project &Pkg(std::string_view name) {
     std::string pkg(name);
+    std::string stderr_redirect = platform::GetStderrRedirect();
 
-    std::string cflags =
-        platform::RunCapture("pkg-config --cflags " + pkg + " 2>/dev/null");
+    std::string cflags = platform::RunCapture("pkg-config --cflags " + pkg +
+                                              " " + stderr_redirect);
     if (!cflags.empty()) {
       std::istringstream iss(cflags);
       std::string flag;
@@ -916,8 +1002,8 @@ public:
       }
     }
 
-    std::string libs =
-        platform::RunCapture("pkg-config --libs " + pkg + " 2>/dev/null");
+    std::string libs = platform::RunCapture("pkg-config --libs " + pkg + " " +
+                                            stderr_redirect);
     if (!libs.empty()) {
       std::istringstream iss(libs);
       std::string flag;
