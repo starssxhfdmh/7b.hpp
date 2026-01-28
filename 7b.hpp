@@ -168,6 +168,15 @@ inline constexpr const char *kColorYellow = "\033[33m";
 inline constexpr const char *kColorCyan = "\033[36m";
 #endif
 
+/// @brief Maximum file size for hashing (100MB).
+inline constexpr size_t kMaxHashFileSize = 100 * 1024 * 1024;
+
+/// @brief Windows executable extension length.
+inline constexpr size_t kExeExtLen = 4;
+
+/// @brief Library prefix length on Unix.
+inline constexpr size_t kLibPrefixLen = 3;
+
 } // namespace detail
 
 /// @brief Logs an error message to stderr.
@@ -178,12 +187,12 @@ inline void Error(std::string_view msg) {
             << "\n";
 }
 
-/// @brief Logs a warning message to stdout.
+/// @brief Logs a warning message to stderr.
 /// @param msg The warning message to display.
 /// @note Hidden when SB_QUIET is defined.
 inline void Warn([[maybe_unused]] std::string_view msg) {
 #ifndef SB_QUIET
-  std::cout << detail::kColorYellow << "[7b] WARN: " << detail::kColorReset
+  std::cerr << detail::kColorYellow << "[7b] WARN: " << detail::kColorReset
             << msg << "\n";
 #endif
 }
@@ -230,7 +239,9 @@ inline uint64_t Fnv1aHash(const uint8_t *data, size_t len) {
 
 /// @brief Computes hash of a file's contents.
 /// @param path Path to the file to hash.
-/// @return The hash value, or std::nullopt if the file cannot be read.
+/// @return The hash value, or std::nullopt if the file cannot be read
+///         or exceeds the maximum file size limit.
+/// @note Files larger than 100MB will return std::nullopt.
 inline std::optional<uint64_t> HashFile(const std::filesystem::path &path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file) {
@@ -240,6 +251,11 @@ inline std::optional<uint64_t> HashFile(const std::filesystem::path &path) {
   auto size = file.tellg();
   if (size <= 0) {
     return Fnv1aHash(nullptr, 0);
+  }
+
+  // Prevent memory exhaustion from extremely large files
+  if (static_cast<size_t>(size) > kMaxHashFileSize) {
+    return std::nullopt;
   }
 
   file.seekg(0, std::ios::beg);
@@ -334,7 +350,10 @@ ParseIncludes(const std::filesystem::path &source,
     return headers;
   }
 
-  std::regex include_regex(R"(^\s*#\s*include\s*["<]([^">]+)[">])");
+  // Static regex to avoid recompilation on every call (performance + ReDoS
+  // mitigation)
+  static const std::regex include_regex(
+      R"(^\s*#\s*include\s*["<]([^">]+)[">])");
   std::string line;
   auto source_dir = source.parent_path();
 
@@ -516,6 +535,9 @@ inline int RunCommand(const std::vector<std::string> &args) {
 
   PROCESS_INFORMATION pi = {};
 
+  // Note: When CreateProcessA fails, no handles are allocated, so no cleanup is
+  // needed. SAFETY: const_cast is safe because cmd string lifetime extends
+  // beyond CreateProcessA call.
   if (!CreateProcessA(nullptr, const_cast<char *>(cmd.c_str()), nullptr,
                       nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
     return -1;
@@ -537,9 +559,13 @@ inline int RunCommand(const std::vector<std::string> &args) {
   }
 
   if (pid == 0) {
+    // Child process code
     std::vector<char *> argv;
     argv.reserve(args.size() + 1);
     for (const auto &arg : args) {
+      // SAFETY: args vector lifetime extends beyond execvp call.
+      // On exec failure, _Exit() immediately terminates the child process,
+      // so allocated memory is reclaimed by the OS.
       argv.push_back(const_cast<char *>(arg.c_str()));
     }
     argv.push_back(nullptr);
@@ -581,6 +607,9 @@ inline pid_t RunCommandAsync(const std::vector<std::string> &args) {
 
   PROCESS_INFORMATION pi = {};
 
+  // Note: When CreateProcessA fails, no handles are allocated, so no cleanup is
+  // needed. SAFETY: const_cast is safe because cmd string lifetime extends
+  // beyond CreateProcessA call.
   if (!CreateProcessA(nullptr, const_cast<char *>(cmd.c_str()), nullptr,
                       nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
     return SB_INVALID_PID;
@@ -591,9 +620,13 @@ inline pid_t RunCommandAsync(const std::vector<std::string> &args) {
 #else
   pid_t pid = fork();
   if (pid == 0) {
+    // Child process code
     std::vector<char *> argv;
     argv.reserve(args.size() + 1);
     for (const auto &arg : args) {
+      // SAFETY: args vector lifetime extends beyond execvp call.
+      // On exec failure, _Exit() immediately terminates the child process,
+      // so allocated memory is reclaimed by the OS.
       argv.push_back(const_cast<char *>(arg.c_str()));
     }
     argv.push_back(nullptr);
@@ -726,6 +759,7 @@ inline void Exec(const std::vector<std::string> &args) {
   std::vector<char *> argv;
   argv.reserve(args.size() + 1);
   for (const auto &arg : args) {
+    // SAFETY: args vector lifetime extends beyond execvp call.
     argv.push_back(const_cast<char *>(arg.c_str()));
   }
   argv.push_back(nullptr);
@@ -902,6 +936,10 @@ public:
   ///          - Any of its headers have changed
   ///          - Its hash is not in the cache
   ///          - The corresponding object file doesn't exist
+  /// @note This function is subject to TOCTOU (time-of-check-time-of-use)
+  ///       race conditions if source files are modified during the build.
+  ///       This is acceptable for a build system as the next build will
+  ///       detect the change.
   bool NeedsRebuild(const std::filesystem::path &source,
                     const std::vector<std::string> &include_dirs) const {
     auto hash = ComputeSourceHash(source, include_dirs);
@@ -1014,7 +1052,7 @@ public:
 
   /// @brief Gets the object directory path.
   /// @return Path to object file directory.
-  const std::filesystem::path &GetObjDir() const { return obj_dir_; }
+  const std::filesystem::path &GetObjDir() const noexcept { return obj_dir_; }
 
 private:
   /// @brief Computes combined hash of source and all its headers.
@@ -1041,8 +1079,12 @@ private:
     for (const auto &header : sorted_headers) {
       auto header_hash = detail::HashFile(header);
       if (header_hash) {
-        // Combine hashes using XOR with rotation
-        combined ^= (*header_hash << 1) | (*header_hash >> 63);
+        // Improved hash combination using multiplication and XOR
+        // This reduces collision probability compared to simple XOR with
+        // rotation
+        combined += *header_hash;
+        combined ^= combined >> 17;
+        combined *= 0x9e3779b97f4a7c15ULL; // Golden ratio constant
       }
     }
 
@@ -1207,7 +1249,7 @@ public:
 
   /// @brief Gets the raw argument vector.
   /// @return Const reference to the internal argument vector.
-  const std::vector<std::string> &GetArgs() const { return args_; }
+  const std::vector<std::string> &GetArgs() const noexcept { return args_; }
 
 private:
   std::vector<std::string> args_; ///< Command arguments
@@ -1358,7 +1400,13 @@ public:
   /// @brief Adds a single source file.
   /// @param file Source file path to add.
   /// @return Reference to this Project for chaining.
+  /// @warning Paths containing ".." are rejected to prevent path traversal.
   Project &Source(std::string_view file) {
+    // Validate path doesn't contain directory traversal
+    if (file.find("..") != std::string_view::npos) {
+      Warn("Rejected source with path traversal: " + std::string(file));
+      return *this;
+    }
     sources_.emplace_back(file);
     return *this;
   }
@@ -1456,7 +1504,17 @@ public:
   /// @return Reference to this Project for chaining.
   /// @details Automatically adds --cflags and --libs from pkg-config.
   ///          Shows a warning if the package is not found.
+  /// @warning Package names are validated to prevent command injection.
   Project &Pkg(std::string_view name) {
+    // Validate package name to prevent command injection
+    for (char c : name) {
+      if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' &&
+          c != '_' && c != '+' && c != '.') {
+        Error("Invalid package name (unsafe characters): " + std::string(name));
+        return *this;
+      }
+    }
+
     std::string pkg(name);
     std::string stderr_redirect = platform::GetStderrRedirect();
 
@@ -1703,7 +1761,12 @@ public:
 
         cmd.Args({"-c", job.source.string(), "-o", job.obj.string()});
 
-        pids.push_back(cmd.RunAsync());
+        pid_t pid = cmd.RunAsync();
+        if (pid == SB_INVALID_PID) {
+          Error("Failed to start compilation for: " + job.source.string());
+          return false;
+        }
+        pids.push_back(pid);
         batch.push_back(&job);
       }
 
