@@ -78,6 +78,19 @@ sb::Project("name")
     .Jobs(4)                    // default: auto-detect
     .Release()                  // or .Debug() (default)
     
+    // Output type
+    .Type(sb::OutputType::Executable)   // default
+    .Type(sb::OutputType::StaticLib)    // creates libname.a / name.lib
+    .Type(sb::OutputType::SharedLib)    // creates libname.so / name.dll / libname.dylib
+    
+    // Override default build flags
+    .DebugFlags({"-g3", "-Og", "-Wall", "-Wextra", "-Wpedantic"})
+    .ReleaseFlags({"-O3", "-DNDEBUG", "-march=native", "-flto"})
+    
+    // Generate compile_commands.json (for clangd/IDE support)
+    .GenerateCompileCommands()                      // default: ./compile_commands.json
+    .GenerateCompileCommands("build/compile_commands.json")
+    
     // Build
     .Build();                   // returns bool
     
