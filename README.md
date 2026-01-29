@@ -73,7 +73,7 @@ sb::Project("app")
     .Output("bin/myapp")                 // Set output binary name
     .Type(sb::OutputType::SharedLib)     // Executable, StaticLib, or SharedLib
     .Jobs(4)                             // Set concurrent compile jobs (defualt: auto)
-    .Debug()                             // Enable debug mode (default: Release)
+    .Profile(sb::Profile::Release())     // Set build profile (default: Debug)
     .GenerateCompileCommands()           // Generate compile_commands.json for IDEs
     .Build();                            // Run the build
 ```
@@ -110,6 +110,5 @@ Define these **before** `#include "7b.hpp"`.
 | `SB_QUIET` | Minimal output (errors only) |
 | `SB_VERBOSE` | Enable verbose debug logging |
 | `SB_NO_COLORS` | Disable colored output |
-| `SB_CXX` | Override compiler (e.g. `clang++` or `g++-12`) |
 | `SB_CACHE_DIR` | Set custom cache directory (default `.7b`) |
 | `SB_TOOLCHAIN` | Force toolchain: `gcc`, `clang`, or `msvc` |

@@ -2,11 +2,12 @@
 /// @brief Build script for SDL2 Particle Demo using 7b build system
 
 #include "../../7b.hpp"
+using namespace sb;
 
 BUILD {
   // Create project configuration
   auto project =
-      sb::Project("particle_demo")
+      Project("particle_demo")
           .Sources({"src/main.cpp", "src/core/engine.cpp",
                     "src/graphics/renderer.cpp", "src/input/input.cpp"})
           .IncludeDir("src")
@@ -14,25 +15,22 @@ BUILD {
           .Standard("c++17");
 
   // Handle commands and flags
-  if (sb::Flag("clean")) {
+  if (Flag("clean")) {
     project.Clean();
-    return 0;
+    return;
   }
 
-  if (sb::Flag("release")) {
-    project.Release();
+  if (Flag("release")) {
+    project.Profile(Profile::Release());
   }
 
-  if (sb::Flag("commands") || sb::Flag("compdb")) {
+  if (Flag("commands") || Flag("compdb")) {
     project.GenerateCompileCommands();
-    return 0;
+    return;
   }
-
-  // Generate compile_commands.json automatically before building
-  project.GenerateCompileCommands();
 
   // Build
   project.Build();
 
-  return 0;
+  return;
 }

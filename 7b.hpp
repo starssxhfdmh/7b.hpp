@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.3.0
+/// @version 2.4.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -131,6 +131,85 @@ enum class OutputType {
   StaticLib,  ///< Build a static library (.a/.lib)
   SharedLib   ///< Build a shared library (.so/.dll/.dylib)
 };
+
+/// @class Profile
+/// @brief Base class for build profiles (debug, release, custom).
+/// @details Users can inherit from this class to create custom build profiles
+///          with their own compiler flags, defines, and linker settings.
+///
+/// @par Example Custom Profile
+/// @code{.cpp}
+/// class FastProfile : public sb::Profile {
+/// public:
+///     std::string Name() const override { return "fast"; }
+///     std::vector<std::string> CxxFlags() const override {
+///         return {"-O3", "-march=native", "-flto"};
+///     }
+/// };
+/// @endcode
+class Profile {
+public:
+  virtual ~Profile() = default;
+
+  /// @brief Gets the profile name for display.
+  /// @return Human-readable profile name (e.g., "debug", "release").
+  virtual std::string Name() const = 0;
+
+  /// @brief Gets compiler flags for this profile.
+  /// @return Vector of compiler flags.
+  virtual std::vector<std::string> CxxFlags() const = 0;
+
+  /// @brief Gets linker flags for this profile.
+  /// @return Vector of linker flags (default: empty).
+  virtual std::vector<std::string> LinkFlags() const { return {}; }
+
+  /// @brief Gets preprocessor definitions for this profile.
+  /// @return Vector of defines (default: empty).
+  virtual std::vector<std::string> Defines() const { return {}; }
+
+  /// @brief Gets the built-in Debug profile.
+  /// @return Reference to the static Debug profile instance.
+  static Profile &Debug();
+
+  /// @brief Gets the built-in Release profile.
+  /// @return Reference to the static Release profile instance.
+  static Profile &Release();
+};
+
+/// @class DebugProfile
+/// @brief Built-in debug build profile.
+/// @details Enables debug symbols, disables optimization, enables warnings.
+class DebugProfile : public Profile {
+public:
+  std::string Name() const override { return "debug"; }
+  std::vector<std::string> CxxFlags() const override {
+    return {"-g", "-O0", "-Wall", "-Wextra"};
+  }
+};
+
+/// @class ReleaseProfile
+/// @brief Built-in release build profile.
+/// @details Enables optimization, disables debug info, defines NDEBUG.
+class ReleaseProfile : public Profile {
+public:
+  std::string Name() const override { return "release"; }
+  std::vector<std::string> CxxFlags() const override {
+    return {"-O2", "-DNDEBUG", "-Wall"};
+  }
+  std::vector<std::string> Defines() const override { return {"NDEBUG"}; }
+};
+
+/// @brief Returns the built-in Debug profile.
+inline Profile &Profile::Debug() {
+  static DebugProfile instance;
+  return instance;
+}
+
+/// @brief Returns the built-in Release profile.
+inline Profile &Profile::Release() {
+  static ReleaseProfile instance;
+  return instance;
+}
 
 /// @namespace sb::detail
 /// @brief Internal implementation details.
@@ -1815,12 +1894,11 @@ class Cache {
 public:
   /// @brief Creates a cache manager instance.
   /// @param cache_dir Base directory for cache storage.
-  /// @param release If true, use release subdirectory; otherwise debug.
+  /// @param profile_name Name of the profile (used for cache subdirectory).
   /// @param toolchain Pointer to the toolchain for object extension.
-  explicit Cache(const std::filesystem::path &cache_dir, bool release,
-                 const Toolchain *toolchain)
-      : cache_dir_(cache_dir),
-        obj_dir_(cache_dir / (release ? "release" : "debug")),
+  explicit Cache(const std::filesystem::path &cache_dir,
+                 const std::string &profile_name, const Toolchain *toolchain)
+      : cache_dir_(cache_dir), obj_dir_(cache_dir / profile_name),
         cache_file_(obj_dir_ / ".cache"), config_file_(obj_dir_ / ".config"),
         toolchain_(toolchain) {}
 
@@ -2572,17 +2650,19 @@ public:
     return *this;
   }
 
-  /// @brief Enables debug build mode.
+  /// @brief Sets the build profile.
+  /// @param p Reference to a Profile (e.g., Profile::Debug(),
+  /// Profile::Release()).
   /// @return Reference to this Project for chaining.
-  Project &Debug() {
-    release_ = false;
-    return *this;
-  }
-
-  /// @brief Enables release build mode.
-  /// @return Reference to this Project for chaining.
-  Project &Release() {
-    release_ = true;
+  /// @details Use built-in profiles or create custom ones by inheriting from
+  /// Profile.
+  /// @code{.cpp}
+  /// project.Profile(Profile::Release());
+  /// // Or with custom profile:
+  /// project.Profile(myCustomProfile);
+  /// @endcode
+  Project &Profile(sb::Profile &p) {
+    profile_ = &p;
     return *this;
   }
 
@@ -2619,11 +2699,7 @@ public:
 
     file << "[\n";
 
-    auto build_flags =
-        release_ ? (release_flags_.empty() ? toolchain_->GetReleaseFlags()
-                                           : release_flags_)
-                 : (debug_flags_.empty() ? toolchain_->GetDebugFlags()
-                                         : debug_flags_);
+    auto build_flags = profile_->CxxFlags();
 
     for (size_t idx = 0; idx < sources_.size(); ++idx) {
       const auto &source = sources_[idx];
@@ -2700,7 +2776,7 @@ public:
       }
     }
 
-    Cache cache(SB_CACHE_DIR, release_, toolchain_.get());
+    Cache cache(SB_CACHE_DIR, profile_->Name(), toolchain_.get());
     if (!cache.Init()) {
       return false;
     }
@@ -2709,8 +2785,8 @@ public:
     uint64_t config_hash = ComputeConfigHash();
     cache.SetConfigHash(config_hash);
 
-    Log("Building " + name_ + " [" + toolchain_->GetName() +
-        (release_ ? ", release" : ", debug") + "]...");
+    Log("Building " + name_ + " [" + toolchain_->GetName() + ", " +
+        profile_->Name() + "]...");
 
     int job_count = jobs_ > 0 ? jobs_ : platform::GetCpuCount();
 
@@ -2742,11 +2818,7 @@ public:
 
     detail::ProgressBar progress(jobs_to_run.size());
 
-    auto build_flags =
-        release_ ? (release_flags_.empty() ? toolchain_->GetReleaseFlags()
-                                           : release_flags_)
-                 : (debug_flags_.empty() ? toolchain_->GetDebugFlags()
-                                         : debug_flags_);
+    auto build_flags = profile_->CxxFlags();
 
     std::vector<std::string> all_flags = build_flags;
     all_flags.insert(all_flags.end(), cxx_flags_.begin(), cxx_flags_.end());
@@ -2861,7 +2933,7 @@ public:
       platform::RemoveFile(output);
     }
 
-    Cache cache(SB_CACHE_DIR, release_, toolchain_.get());
+    Cache cache(SB_CACHE_DIR, profile_->Name(), toolchain_.get());
     return cache.Clean();
   }
 
@@ -2873,14 +2945,9 @@ private:
 
     config += toolchain_->GetName();
     config += "|" + standard_;
-    config += "|";
-    config += (release_ ? "release" : "debug");
+    config += "|" + profile_->Name();
 
-    auto flags = release_
-                     ? (release_flags_.empty() ? toolchain_->GetReleaseFlags()
-                                               : release_flags_)
-                     : (debug_flags_.empty() ? toolchain_->GetDebugFlags()
-                                             : debug_flags_);
+    auto flags = profile_->CxxFlags();
 
     for (const auto &f : flags)
       config += "|" + f;
@@ -3041,12 +3108,10 @@ private:
   std::vector<std::string> libs_;
   std::vector<std::string> cxx_flags_;
   std::vector<std::string> link_flags_;
-  std::vector<std::string> debug_flags_;
-  std::vector<std::string> release_flags_;
   std::string output_;
   std::string standard_ = "c++17";
   int jobs_ = 0;
-  bool release_ = false;
+  sb::Profile *profile_ = &sb::Profile::Debug();
   OutputType output_type_ = OutputType::Executable;
 };
 
@@ -3090,13 +3155,13 @@ private:
 /// }
 /// @endcode
 #define BUILD                                                                  \
-  int BUILD_SCRIPT_IMPL();                                                     \
+  void BUILD_SCRIPT_IMPL();                                                    \
   int main(int argc, char **argv) {                                            \
     sb::Init(argc, argv, __FILE__);                                            \
     BUILD_SCRIPT_IMPL();                                                       \
     return 0;                                                                  \
   }                                                                            \
-  int BUILD_SCRIPT_IMPL()
+  void BUILD_SCRIPT_IMPL()
 
 } // namespace sb
 
