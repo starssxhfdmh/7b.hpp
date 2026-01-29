@@ -47,12 +47,60 @@ From now on, just run `./build`. If you modify `build.cpp`, it reconfigures itse
 
 ## Cheatsheet
 
+### Project Configuration
+
 ```cpp
 sb::Project("app")
-    .Sources({"main.cpp", "utils.cpp"})
-    .IncludeDir("include")          // -I include
-    .LinkLib("pthread")             // -lpthread
-    .Pkg("sdl2")                    // pkg-config --cflags --libs sdl2
-    .GenerateCompileCommands()      // For IDE support
-    .Build();
+    .Sources({"main.cpp", "utils.cpp"})  // Add source files
+    .IncludeDir("include")               // Add include directory (-I)
+    .LibDir("libs")                      // Add library directory (-L)
+    .LinkLib("pthread")                  // Link shared library (-l)
+    .LinkLibStatic("utils")              // Link static library (Linux only)
+    .Pkg("sdl2")                         // Use pkg-config (Unix only)
+    .Define("NDEBUG")                    // Add preprocessor definition (-D)
+    .CxxFlag("-Wall")                    // Add custom compiler flag
+    .LinkFlag("-s")                      // Add custom linker flag
+    .Standard("c++20")                   // Set C++ standard (default: c++17)
+    .Output("bin/myapp")                 // Set output binary name
+    .Type(sb::OutputType::SharedLib)     // Executable, StaticLib, or SharedLib
+    .Jobs(4)                             // Set concurrent compile jobs
+    .Debug()                             // Enable debug mode (default: Release)
+    .GenerateCompileCommands()           // Generate compile_commands.json for IDEs
+    .Build();                            // Run the build
 ```
+
+### CLI Arguments
+```cpp
+// Check if flag exists: ./build --clean
+if (sb::Flag("clean")) {
+    sb::Project("app").Clean();
+    return 0;
+}
+
+// Get option value: ./build --target=release
+std::string mode = sb::Option("target", "debug");
+if (mode == "release") {
+    // ...
+}
+```
+
+### Custom Commands
+```cpp
+// Run arbitrary shell commands
+sb::Cmd()
+    .Arg("tar")
+    .Args({"-cvf", "assets.tar", "assets/"})
+    .Run(); // Returns true on success
+```
+
+### Configuration Macros
+Define these **before** `#include "7b.hpp"`.
+
+| Macro | Description |
+|-------|-------------|
+| `SB_QUIET` | Minimal output (errors only) |
+| `SB_VERBOSE` | Enable verbose debug logging |
+| `SB_NO_COLORS` | Disable colored output |
+| `SB_CXX` | Override compiler (e.g. `clang++` or `g++-12`) |
+| `SB_CACHE_DIR` | Set custom cache directory (default `.7b`) |
+| `SB_TOOLCHAIN` | Force toolchain: `gcc`, `clang`, or `msvc` |
