@@ -3,9 +3,7 @@
 
 #include "../../7b.hpp"
 
-int main(int argc, char *argv[]) {
-  SB_INIT(argc, argv);
-
+BUILD {
   // Create project configuration
   auto project =
       sb::Project("particle_demo")

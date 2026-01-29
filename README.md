@@ -30,6 +30,15 @@ int main(int argc, char** argv) {
     
     return 0;
 }
+
+// or use the BUILD macro
+BUILD {
+    sb::Project("myapp")
+        .Sources({"src/main.cpp", "src/utils.cpp"})
+        .Build();
+
+    return 0;
+}
 ```
 
 **2. Bootstrap & Run**:

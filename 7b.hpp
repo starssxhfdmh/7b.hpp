@@ -3065,6 +3065,39 @@ private:
 /// @endcode
 #define SB_INIT(argc, argv) sb::Init(argc, argv, __FILE__)
 
+/// @def BUILD
+/// @brief Optional shorthand macro for build scripts.
+/// @details Expands to a complete main() function with SB_INIT() already
+/// called.
+///          This is purely a convenience feature - you can still write
+///          traditional main() with SB_INIT() manually if you prefer more
+///          control.
+/// @code{.cpp}
+/// // Simple shorthand style:
+/// BUILD {
+///     sb::Project("myapp")
+///         .Sources({"main.cpp"})
+///         .Build();
+/// }
+///
+/// // Equivalent:
+/// int main(int argc, char** argv) {
+///     SB_INIT(argc, argv);
+///     sb::Project("myapp")
+///         .Sources({"main.cpp"})
+///         .Build();
+///     return 0;
+/// }
+/// @endcode
+#define BUILD                                                                  \
+  int BUILD_SCRIPT_IMPL();                                                     \
+  int main(int argc, char **argv) {                                            \
+    sb::Init(argc, argv, __FILE__);                                            \
+    BUILD_SCRIPT_IMPL();                                                       \
+    return 0;                                                                  \
+  }                                                                            \
+  int BUILD_SCRIPT_IMPL()
+
 } // namespace sb
 
 #endif // SEVENB_HPP_
