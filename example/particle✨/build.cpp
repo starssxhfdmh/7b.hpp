@@ -15,23 +15,19 @@ int main(int argc, char *argv[]) {
           .Pkg("sdl2")
           .Standard("c++17");
 
-  // Check for commands
-  for (int i = 1; i < argc; ++i) {
-    std::string arg = argv[i];
+  // Handle commands and flags
+  if (sb::Flag("clean")) {
+    project.Clean();
+    return 0;
+  }
 
-    if (arg == "clean") {
-      project.Clean();
-      return 0;
-    }
+  if (sb::Flag("release")) {
+    project.Release();
+  }
 
-    if (arg == "release") {
-      project.Release();
-    }
-
-    if (arg == "commands" || arg == "compdb") {
-      project.GenerateCompileCommands();
-      return 0;
-    }
+  if (sb::Flag("commands") || sb::Flag("compdb")) {
+    project.GenerateCompileCommands();
+    return 0;
   }
 
   // Generate compile_commands.json automatically before building
