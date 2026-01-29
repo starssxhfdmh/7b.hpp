@@ -4,18 +4,18 @@
 
 > Stop learning new build syntaxes. Build your C++ projects using the language you already know.
 
-## ⚡ What is this?
+## What is this?
 **7b** is a header-only library that lets you write build scripts in standard **C++17**.
 
 It replaces complex build systems like CMake or Make with a single C++ file. It handles parallel compilation, dependency tracking, and incremental builds automatically.
 
-## 🚀 Why use it?
+## Why use it?
 - **It's just C++**: Use loops, strings, and standard libraries to handle complex build logic.
 - **Zero Friction**: It **rebuilds itself**. Edit `build.cpp`, run `./build`, and 7b automatically recompiles the build script before running it.
 - **Header-Only**: No installation required. Just drop `7b.hpp` in your repo.
 - **Fast**: Automatic parallel compilation and incremental builds.
 
-## 🛠️ Quick Start
+## Quick Start
 
 **1. Create `build.cpp`**:
 ```cpp
@@ -45,7 +45,7 @@ build.exe
 ```
 From now on, just run `./build`. If you modify `build.cpp`, it reconfigures itself automatically.
 
-## 📦 Cheatsheet
+## Cheatsheet
 
 ```cpp
 sb::Project("app")
@@ -56,6 +56,3 @@ sb::Project("app")
     .GenerateCompileCommands()      // For IDE support
     .Build();
 ```
-
-## 📄 License
-MIT License.
