@@ -7,7 +7,7 @@ using namespace sb;
 BUILD {
   // Create project configuration
   auto project = Project("particle_demo")
-                     .Source("src/**/*.cpp")
+                     .SourceDir("src", "*.cpp", true)
                      .IncludeDir("src")
                      .Pkg("sdl2")
                      .Standard("c++17");
