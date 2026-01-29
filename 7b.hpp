@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.5.0
+/// @version 2.6.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -2558,6 +2558,46 @@ public:
     auto expanded = detail::ExpandGlob(file);
     for (auto &path : expanded) {
       sources_.push_back(std::move(path));
+    }
+    return *this;
+  }
+
+  /// @brief Adds all source files from a directory.
+  /// @param dir Directory path to scan for source files.
+  /// @param pattern Glob pattern for files (default: "*.cpp").
+  /// @param recursive If true, scan subdirectories (default: false).
+  /// @return Reference to this Project for chaining.
+  Project &SourceDir(std::string_view dir, std::string_view pattern = "*.cpp",
+                     bool recursive = false) {
+    if (!detail::IsPathSafe(dir)) {
+      throw BuildError("Unsafe path rejected: " + std::string(dir));
+    }
+    std::string glob_pattern = std::string(dir);
+    if (!glob_pattern.empty() && glob_pattern.back() != '/' &&
+        glob_pattern.back() != '\\') {
+      glob_pattern += '/';
+    }
+    if (recursive) {
+      glob_pattern += "**/";
+    }
+    glob_pattern += pattern;
+    auto expanded = detail::ExpandGlob(glob_pattern);
+    for (auto &path : expanded) {
+      sources_.push_back(std::move(path));
+    }
+    return *this;
+  }
+
+  /// @brief Adds all source files from multiple directories.
+  /// @param dirs Directory paths to scan.
+  /// @param pattern Glob pattern for files (default: "*.cpp").
+  /// @param recursive If true, scan subdirectories (default: false).
+  /// @return Reference to this Project for chaining.
+  Project &SourceDirs(std::initializer_list<std::string_view> dirs,
+                      std::string_view pattern = "*.cpp",
+                      bool recursive = false) {
+    for (auto dir : dirs) {
+      SourceDir(dir, pattern, recursive);
     }
     return *this;
   }

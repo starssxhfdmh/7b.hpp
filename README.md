@@ -60,7 +60,8 @@ From now on, just run `./build`. If you modify `build.cpp`, it reconfigures itse
 
 ```cpp
 sb::Project("app")
-    .Sources({"src/**/*.cpp"})            // Add source files
+    .SourceDir("src", "*.cpp", true)     // All .cpp in src/ recursively
+    .Sources({"main.cpp"})               // Glob patterns: *.cpp, **/*.cpp
     .IncludeDir("include")               // Add include directory (-I)
     .LibDir("libs")                      // Add library directory (-L)
     .LinkLib("pthread")                  // Link shared library (-l)
@@ -72,7 +73,7 @@ sb::Project("app")
     .Standard("c++20")                   // Set C++ standard (default: c++17)
     .Output("bin/myapp")                 // Set output binary name
     .Type(sb::OutputType::SharedLib)     // Executable, StaticLib, or SharedLib
-    .Jobs(4)                             // Set concurrent compile jobs (defualt: auto)
+    .Jobs(4)                             // Set concurrent compile jobs (default: auto)
     .Profile(sb::Profile::Release())     // Set build profile (default: Debug)
     .GenerateCompileCommands()           // Generate compile_commands.json for IDEs
     .Build();                            // Run the build
