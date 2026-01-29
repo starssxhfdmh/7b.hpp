@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.1.0
+/// @version 2.2.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -42,7 +42,6 @@
 /// | @c SB_QUIET | Minimal output (errors only) |
 /// | @c SB_VERBOSE | Extra detailed output |
 /// | @c SB_NO_COLORS | Disable colored output |
-/// | @c SB_CXX | Override compiler (auto-detected by default) |
 /// | @c SB_CACHE_DIR | Override cache directory (default: .7b) |
 /// | @c SB_TOOLCHAIN | Force toolchain: "gcc", "clang", or "msvc" |
 ///
@@ -270,6 +269,22 @@ inline void Verbose([[maybe_unused]] std::string_view msg) {
             << "\n";
 #endif
 }
+
+/// @class BuildError
+/// @brief Exception class for build system errors.
+/// @details Automatically prints error message to stderr with color formatting
+///          when constructed, then can be caught like any standard exception.
+class BuildError : public std::runtime_error {
+public:
+  /// @brief Creates a BuildError with the given message.
+  /// @param msg Error message to display and store.
+  explicit BuildError(std::string_view msg)
+      : std::runtime_error(std::string(msg)) {
+    detail::InitConsole();
+    std::cerr << detail::ColorRed() << "[7b] ERROR: " << detail::ColorReset()
+              << msg << "\n";
+  }
+};
 
 namespace detail {
 
@@ -1347,13 +1362,7 @@ class GCCToolchain : public Toolchain {
 public:
   ToolchainType GetType() const override { return ToolchainType::GCC; }
   std::string GetName() const override { return "GCC"; }
-  std::string GetCompiler() const override {
-#ifdef SB_CXX
-    return SB_CXX;
-#else
-    return "g++";
-#endif
-  }
+  std::string GetCompiler() const override { return "g++"; }
   std::string GetArchiver() const override { return "ar"; }
   std::string GetObjectExtension() const override { return ".o"; }
   std::string GetStaticLibExtension() const override { return ".a"; }
@@ -1479,13 +1488,7 @@ class ClangToolchain : public Toolchain {
 public:
   ToolchainType GetType() const override { return ToolchainType::Clang; }
   std::string GetName() const override { return "Clang"; }
-  std::string GetCompiler() const override {
-#ifdef SB_CXX
-    return SB_CXX;
-#else
-    return "clang++";
-#endif
-  }
+  std::string GetCompiler() const override { return "clang++"; }
   std::string GetArchiver() const override { return "ar"; }
   std::string GetObjectExtension() const override { return ".o"; }
   std::string GetStaticLibExtension() const override { return ".a"; }
@@ -1625,13 +1628,7 @@ class MSVCToolchain : public Toolchain {
 public:
   ToolchainType GetType() const override { return ToolchainType::MSVC; }
   std::string GetName() const override { return "MSVC"; }
-  std::string GetCompiler() const override {
-#ifdef SB_CXX
-    return SB_CXX;
-#else
-    return "cl";
-#endif
-  }
+  std::string GetCompiler() const override { return "cl"; }
   std::string GetArchiver() const override { return "lib"; }
   std::string GetObjectExtension() const override { return ".obj"; }
   std::string GetExecutableExtension() const override { return ".exe"; }
@@ -1764,20 +1761,6 @@ inline std::unique_ptr<Toolchain> Toolchain::Detect() {
     return std::make_unique<MSVCToolchain>();
 #endif
 
-#ifdef SB_CXX
-  std::string compiler = SB_CXX;
-  if (compiler.find("g++") != std::string::npos ||
-      compiler.find("gcc") != std::string::npos) {
-    return std::make_unique<GCCToolchain>();
-  }
-  if (compiler.find("clang") != std::string::npos) {
-    return std::make_unique<ClangToolchain>();
-  }
-  if (compiler.find("cl") != std::string::npos) {
-    return std::make_unique<MSVCToolchain>();
-  }
-#endif
-
 #ifdef _WIN32
   // On Windows, prefer MSVC if available, then Clang, then GCC
   if (platform::CommandExists("cl")) {
@@ -1799,9 +1782,8 @@ inline std::unique_ptr<Toolchain> Toolchain::Detect() {
   }
 #endif
 
-  // Fallback to GCC
-  Warn("Could not detect compiler, falling back to g++");
-  return std::make_unique<GCCToolchain>();
+  // No compiler found
+  return nullptr;
 }
 
 /// @brief Creates a specific toolchain by type.
@@ -2154,6 +2136,9 @@ inline void RebuildAndExec(const BuildInfo &info) {
 #endif
 
   auto toolchain = Toolchain::Detect();
+  if (!toolchain) {
+    throw BuildError("No compiler found. Please install GCC, Clang, or MSVC.");
+  }
 
   Cmd cmd;
   cmd.Arg(toolchain->GetCompiler());
@@ -2305,14 +2290,23 @@ class Project {
 public:
   /// @brief Creates a new project with the given name.
   /// @param name Project name (also used as default output name).
-  explicit Project(std::string_view name)
-      : name_(name), toolchain_(Toolchain::Detect()) {}
+  explicit Project(std::string_view name) : name_(name) {
+    toolchain_ = Toolchain::Detect();
+    if (!toolchain_) {
+      throw BuildError(
+          "No compiler found. Please install GCC, Clang, or MSVC.");
+    }
+  }
 
   /// @brief Creates a project with a specific toolchain.
   /// @param name Project name.
   /// @param type Toolchain type to use.
-  Project(std::string_view name, ToolchainType type)
-      : name_(name), toolchain_(Toolchain::Create(type)) {}
+  Project(std::string_view name, ToolchainType type) : name_(name) {
+    toolchain_ = Toolchain::Create(type);
+    if (!toolchain_) {
+      throw BuildError("Requested compiler toolchain not available.");
+    }
+  }
 
   /// @brief Adds multiple source files from an initializer list.
   /// @param files Source file paths to add.
@@ -2321,8 +2315,7 @@ public:
     sources_.reserve(sources_.size() + files.size());
     for (auto file : files) {
       if (!detail::IsPathSafe(file)) {
-        Warn("Rejected source with unsafe path: " + std::string(file));
-        continue;
+        throw BuildError("Unsafe path rejected: " + std::string(file));
       }
       sources_.emplace_back(file);
     }
@@ -2336,8 +2329,7 @@ public:
     sources_.reserve(sources_.size() + files.size());
     for (const auto &file : files) {
       if (!detail::IsPathSafe(file)) {
-        Warn("Rejected source with unsafe path: " + file);
-        continue;
+        throw BuildError("Unsafe path rejected: " + file);
       }
       sources_.emplace_back(file);
     }
@@ -2349,8 +2341,7 @@ public:
   /// @return Reference to this Project for chaining.
   Project &Source(std::string_view file) {
     if (!detail::IsPathSafe(file)) {
-      Warn("Rejected source with unsafe path: " + std::string(file));
-      return *this;
+      throw BuildError("Unsafe path rejected: " + std::string(file));
     }
     sources_.emplace_back(file);
     return *this;
@@ -2361,8 +2352,7 @@ public:
   /// @return Reference to this Project for chaining.
   Project &IncludeDir(std::string_view dir) {
     if (!detail::IsPathSafe(dir)) {
-      Warn("Rejected include dir with unsafe path: " + std::string(dir));
-      return *this;
+      throw BuildError("Unsafe path rejected: " + std::string(dir));
     }
     include_dirs_.emplace_back(dir);
     return *this;
@@ -2375,8 +2365,7 @@ public:
     include_dirs_.reserve(include_dirs_.size() + dirs.size());
     for (auto dir : dirs) {
       if (!detail::IsPathSafe(dir)) {
-        Warn("Rejected include dir with unsafe path: " + std::string(dir));
-        continue;
+        throw BuildError("Unsafe path rejected: " + std::string(dir));
       }
       include_dirs_.emplace_back(dir);
     }
@@ -2388,8 +2377,7 @@ public:
   /// @return Reference to this Project for chaining.
   Project &LibDir(std::string_view dir) {
     if (!detail::IsPathSafe(dir)) {
-      Warn("Rejected lib dir with unsafe path: " + std::string(dir));
-      return *this;
+      throw BuildError("Unsafe path rejected: " + std::string(dir));
     }
     lib_dirs_.emplace_back(dir);
     return *this;
@@ -2402,8 +2390,7 @@ public:
     lib_dirs_.reserve(lib_dirs_.size() + dirs.size());
     for (auto dir : dirs) {
       if (!detail::IsPathSafe(dir)) {
-        Warn("Rejected lib dir with unsafe path: " + std::string(dir));
-        continue;
+        throw BuildError("Unsafe path rejected: " + std::string(dir));
       }
       lib_dirs_.emplace_back(dir);
     }
@@ -2577,30 +2564,6 @@ public:
     return *this;
   }
 
-  /// @brief Overrides default debug build flags.
-  /// @param flags New debug flags.
-  /// @return Reference to this Project for chaining.
-  Project &DebugFlags(std::initializer_list<std::string_view> flags) {
-    debug_flags_.clear();
-    debug_flags_.reserve(flags.size());
-    for (auto flag : flags) {
-      debug_flags_.emplace_back(flag);
-    }
-    return *this;
-  }
-
-  /// @brief Overrides default release build flags.
-  /// @param flags New release flags.
-  /// @return Reference to this Project for chaining.
-  Project &ReleaseFlags(std::initializer_list<std::string_view> flags) {
-    release_flags_.clear();
-    release_flags_.reserve(flags.size());
-    for (auto flag : flags) {
-      release_flags_.emplace_back(flag);
-    }
-    return *this;
-  }
-
   /// @brief Sets the number of parallel compilation jobs.
   /// @param n Number of jobs (0 = auto-detect based on CPU cores).
   /// @return Reference to this Project for chaining.
@@ -2726,13 +2689,13 @@ public:
   /// @return True on successful build, false on failure.
   bool Build() {
     if (sources_.empty()) {
-      Error("No source files specified");
+      throw BuildError("No source files specified");
       return false;
     }
 
     for (const auto &source : sources_) {
       if (!platform::FileExists(source)) {
-        Error("Source file not found: " + source.string());
+        throw BuildError("Source file not found: " + source.string());
         return false;
       }
     }
