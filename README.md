@@ -40,7 +40,7 @@ g++ build.cpp -std=c++17 -o build
 ./build
 
 # Windows (MSVC use developer command prompt)
-cl build.cpp -std:c++17 /EHsc
+cl build.cpp /std:c++17 /EHsc
 build.exe
 ```
 From now on, just run `./build`. If you modify `build.cpp`, it reconfigures itself automatically.
