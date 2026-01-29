@@ -5,5 +5,9 @@
 using namespace sb;
 
 BUILD {
-  Project("hello").SourceDir("src").IncludeDir("src").Standard("c++17").Build();
+  Project("hello")
+    .SourceDir("src")
+    .IncludeDir("src")
+    .Standard("c++17")
+    .Build();
 }
