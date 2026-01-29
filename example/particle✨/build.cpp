@@ -6,13 +6,11 @@ using namespace sb;
 
 BUILD {
   // Create project configuration
-  auto project =
-      Project("particle_demo")
-          .Sources({"src/main.cpp", "src/core/engine.cpp",
-                    "src/graphics/renderer.cpp", "src/input/input.cpp"})
-          .IncludeDir("src")
-          .Pkg("sdl2")
-          .Standard("c++17");
+  auto project = Project("particle_demo")
+                     .Source("src/**/*.cpp")
+                     .IncludeDir("src")
+                     .Pkg("sdl2")
+                     .Standard("c++17");
 
   // Handle commands and flags
   if (Flag("clean")) {
