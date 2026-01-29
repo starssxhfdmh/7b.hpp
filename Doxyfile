@@ -16,6 +16,15 @@ FILE_PATTERNS          = *.hpp *.md
 # Build
 EXTRACT_ALL            = YES
 EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_LOCAL_CLASSES  = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+HIDE_IN_BODY_DOCS      = YES
+SORT_MEMBER_DOCS       = YES
+SORT_BRIEF_DOCS        = YES
+SORT_MEMBERS_CTORS_1ST = YES
+SORT_GROUP_NAMES       = YES
 BUILTIN_STL_SUPPORT    = YES
 JAVADOC_AUTOBRIEF      = YES
 MARKDOWN_SUPPORT       = YES
@@ -26,8 +35,11 @@ REFERENCED_BY_RELATION = YES
 REFERENCES_RELATION    = YES
 VERBATIM_HEADERS       = YES
 ALPHABETICAL_INDEX     = YES
+SHOW_GROUPED_MEMB_INC  = YES
+INLINE_GROUPED_CLASSES = NO
+SHOW_NAMESPACES        = YES
 
-# HTML Output - Doxygen Awesome
+# HTML Output 
 GENERATE_HTML          = YES
 HTML_OUTPUT            = html
 HTML_COLORSTYLE        = LIGHT
@@ -36,7 +48,7 @@ HTML_COLORSTYLE_SAT    = 255
 HTML_COLORSTYLE_GAMMA  = 113
 GENERATE_TREEVIEW      = YES
 TREEVIEW_WIDTH         = 300
-FULL_SIDEBAR           = NO
+FULL_SIDEBAR           = YES
 DISABLE_INDEX          = NO
 HTML_EXTRA_STYLESHEET  = doxygen-awesome-css/doxygen-awesome.css \
                          doxygen-awesome-css/doxygen-awesome-sidebar-only.css \
@@ -46,7 +58,6 @@ HTML_EXTRA_FILES       = doxygen-awesome-css/doxygen-awesome-darkmode-toggle.js 
                          doxygen-awesome-css/doxygen-awesome-paragraph-link.js \
                          doxygen-awesome-css/doxygen-awesome-interactive-toc.js
 HTML_HEADER            = header.html
-HTML_TIMESTAMP         = NO
 SEARCHENGINE           = YES
 
 # Other Output (disabled)
@@ -55,8 +66,27 @@ GENERATE_RTF           = NO
 GENERATE_MAN           = NO
 GENERATE_XML           = NO
 
-# Graphs (disabled for speed)
-HAVE_DOT               = NO
+# Graphs 
+HAVE_DOT               = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+DOT_GRAPH_MAX_NODES    = 100
+MAX_DOT_GRAPH_DEPTH    = 0
+DOT_TRANSPARENT        = YES
+DOT_MULTI_TARGETS      = YES
+GENERATE_LEGEND        = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+GROUP_GRAPHS           = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+GRAPHICAL_HIERARCHY    = YES
+DIRECTORY_GRAPH        = YES
+UML_LOOK               = YES
+UML_LIMIT_NUM_FIELDS   = 10
+DOT_CLEANUP            = YES
 
 # Preprocessor
 ENABLE_PREPROCESSING   = YES
