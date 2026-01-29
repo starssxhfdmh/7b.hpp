@@ -63,7 +63,7 @@ sb::Project("app")
     .Standard("c++20")                   // Set C++ standard (default: c++17)
     .Output("bin/myapp")                 // Set output binary name
     .Type(sb::OutputType::SharedLib)     // Executable, StaticLib, or SharedLib
-    .Jobs(4)                             // Set concurrent compile jobs
+    .Jobs(4)                             // Set concurrent compile jobs (defualt: auto)
     .Debug()                             // Enable debug mode (default: Release)
     .GenerateCompileCommands()           // Generate compile_commands.json for IDEs
     .Build();                            // Run the build
