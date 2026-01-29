@@ -37,7 +37,7 @@ BUILD {
         .Sources({"src/main.cpp", "src/utils.cpp"})
         .Build();
 
-    return 0;
+    return;
 }
 ```
 
