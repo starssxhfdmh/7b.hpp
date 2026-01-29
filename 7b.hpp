@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.2.0
+/// @version 2.3.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
