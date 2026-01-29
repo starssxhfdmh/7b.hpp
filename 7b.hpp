@@ -1347,7 +1347,13 @@ class GCCToolchain : public Toolchain {
 public:
   ToolchainType GetType() const override { return ToolchainType::GCC; }
   std::string GetName() const override { return "GCC"; }
-  std::string GetCompiler() const override { return "g++"; }
+  std::string GetCompiler() const override {
+#ifdef SB_CXX
+    return SB_CXX;
+#else
+    return "g++";
+#endif
+  }
   std::string GetArchiver() const override { return "ar"; }
   std::string GetObjectExtension() const override { return ".o"; }
   std::string GetStaticLibExtension() const override { return ".a"; }
@@ -1473,7 +1479,13 @@ class ClangToolchain : public Toolchain {
 public:
   ToolchainType GetType() const override { return ToolchainType::Clang; }
   std::string GetName() const override { return "Clang"; }
-  std::string GetCompiler() const override { return "clang++"; }
+  std::string GetCompiler() const override {
+#ifdef SB_CXX
+    return SB_CXX;
+#else
+    return "clang++";
+#endif
+  }
   std::string GetArchiver() const override { return "ar"; }
   std::string GetObjectExtension() const override { return ".o"; }
   std::string GetStaticLibExtension() const override { return ".a"; }
@@ -1613,7 +1625,13 @@ class MSVCToolchain : public Toolchain {
 public:
   ToolchainType GetType() const override { return ToolchainType::MSVC; }
   std::string GetName() const override { return "MSVC"; }
-  std::string GetCompiler() const override { return "cl"; }
+  std::string GetCompiler() const override {
+#ifdef SB_CXX
+    return SB_CXX;
+#else
+    return "cl";
+#endif
+  }
   std::string GetArchiver() const override { return "lib"; }
   std::string GetObjectExtension() const override { return ".obj"; }
   std::string GetExecutableExtension() const override { return ".exe"; }
