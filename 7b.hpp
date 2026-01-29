@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.0.0
+/// @version 2.0.1
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -2127,6 +2127,22 @@ inline bool SourceIsNewer(const BuildInfo &info) {
 /// @note This function does not return on success.
 inline void RebuildAndExec(const BuildInfo &info) {
   Log("Rebuilding build executable...");
+
+#ifdef _WIN32
+  // Windows locks running executables, minimizing the chance of successful
+  // overwrite. We rename the current executable to allow the new one to be
+  // written.
+  std::filesystem::path old_exe = info.executable_path;
+  old_exe += ".old";
+  std::error_code ec;
+  if (std::filesystem::exists(old_exe, ec)) {
+    std::filesystem::remove(old_exe, ec);
+  }
+  std::filesystem::rename(info.executable_path, old_exe, ec);
+  if (ec) {
+    Verbose("Failed to rename running executable: " + ec.message());
+  }
+#endif
 
   auto toolchain = Toolchain::Detect();
 
