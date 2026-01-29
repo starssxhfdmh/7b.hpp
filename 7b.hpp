@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.4.0
+/// @version 2.5.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -514,6 +514,130 @@ inline bool IsPathSafe(std::string_view path) {
   }
 #endif
   return true;
+}
+
+/// @brief Checks if a pattern contains glob wildcards.
+/// @param pattern Input string to check.
+/// @return True if pattern contains *, ?, or **.
+inline bool HasGlobPattern(std::string_view pattern) {
+  return pattern.find('*') != std::string_view::npos ||
+         pattern.find('?') != std::string_view::npos;
+}
+
+/// @brief Matches a filename against a glob pattern.
+/// @param pattern Glob pattern (supports * and ?).
+/// @param str String to match.
+/// @return True if str matches pattern.
+inline bool MatchesGlob(std::string_view pattern, std::string_view str) {
+  size_t pi = 0, si = 0;
+  size_t star_p = std::string_view::npos;
+  size_t star_s = 0;
+
+  while (si < str.size()) {
+    if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == str[si])) {
+      ++pi;
+      ++si;
+    } else if (pi < pattern.size() && pattern[pi] == '*') {
+      star_p = pi++;
+      star_s = si;
+    } else if (star_p != std::string_view::npos) {
+      pi = star_p + 1;
+      si = ++star_s;
+    } else {
+      return false;
+    }
+  }
+
+  while (pi < pattern.size() && pattern[pi] == '*') {
+    ++pi;
+  }
+
+  return pi == pattern.size();
+}
+
+/// @brief Expands a glob pattern to matching file paths.
+/// @param pattern Glob pattern (e.g., "src/*.cpp", "**/*.hpp").
+/// @return Vector of matching file paths, or original pattern if no wildcards.
+/// @details Supports:
+///   - `*` matches any characters except path separator
+///   - `**` matches any characters including path separators (recursive)
+///   - `?` matches a single character
+inline std::vector<std::filesystem::path> ExpandGlob(std::string_view pattern) {
+  std::vector<std::filesystem::path> results;
+
+  // No wildcards - return as-is
+  if (!HasGlobPattern(pattern)) {
+    results.emplace_back(pattern);
+    return results;
+  }
+
+  std::filesystem::path pat(pattern);
+  std::string pat_str(pattern);
+
+  // Find base directory (before first wildcard)
+  std::filesystem::path base_dir = ".";
+  std::string file_pattern;
+
+  size_t first_wild = pat_str.find_first_of("*?");
+  if (first_wild != std::string::npos) {
+    // Find last separator before wildcard
+    size_t last_sep = pat_str.find_last_of("/\\", first_wild);
+    if (last_sep != std::string::npos) {
+      base_dir = pat_str.substr(0, last_sep);
+      file_pattern = pat_str.substr(last_sep + 1);
+    } else {
+      file_pattern = pat_str;
+    }
+  }
+
+  bool recursive = (pat_str.find("**") != std::string::npos);
+
+  // Remove ** from pattern for matching
+  std::string match_pattern = file_pattern;
+  size_t dstar = match_pattern.find("**/");
+  if (dstar != std::string::npos) {
+    match_pattern = match_pattern.substr(dstar + 3);
+  }
+  dstar = match_pattern.find("**");
+  if (dstar != std::string::npos) {
+    match_pattern = match_pattern.substr(dstar + 2);
+  }
+
+  std::error_code ec;
+  if (!std::filesystem::exists(base_dir, ec)) {
+    return results;
+  }
+
+  auto process_entry = [&](const std::filesystem::directory_entry &entry) {
+    if (!entry.is_regular_file())
+      return;
+
+    std::string filename = entry.path().filename().string();
+    if (MatchesGlob(match_pattern, filename)) {
+      results.push_back(entry.path());
+    }
+  };
+
+  if (recursive) {
+    for (const auto &entry :
+         std::filesystem::recursive_directory_iterator(base_dir, ec)) {
+      if (ec)
+        break;
+      process_entry(entry);
+    }
+  } else {
+    for (const auto &entry :
+         std::filesystem::directory_iterator(base_dir, ec)) {
+      if (ec)
+        break;
+      process_entry(entry);
+    }
+  }
+
+  // Sort for deterministic order
+  std::sort(results.begin(), results.end());
+
+  return results;
 }
 
 /// @brief Parses #include directives from a source file.
@@ -2387,41 +2511,54 @@ public:
   }
 
   /// @brief Adds multiple source files from an initializer list.
-  /// @param files Source file paths to add.
+  /// @param files Source file paths or glob patterns to add.
   /// @return Reference to this Project for chaining.
+  /// @details Supports glob patterns:
+  ///   - `*.cpp` - all .cpp files in current directory
+  ///   - `src/**/*.cpp` - all .cpp files recursively in src/
+  ///   - `src/?.cpp` - single character match
   Project &Sources(std::initializer_list<std::string_view> files) {
-    sources_.reserve(sources_.size() + files.size());
     for (auto file : files) {
       if (!detail::IsPathSafe(file)) {
         throw BuildError("Unsafe path rejected: " + std::string(file));
       }
-      sources_.emplace_back(file);
+      auto expanded = detail::ExpandGlob(file);
+      sources_.reserve(sources_.size() + expanded.size());
+      for (auto &path : expanded) {
+        sources_.push_back(std::move(path));
+      }
     }
     return *this;
   }
 
   /// @brief Adds multiple source files from a vector.
-  /// @param files Source file paths to add.
+  /// @param files Source file paths or glob patterns to add.
   /// @return Reference to this Project for chaining.
   Project &Sources(const std::vector<std::string> &files) {
-    sources_.reserve(sources_.size() + files.size());
     for (const auto &file : files) {
       if (!detail::IsPathSafe(file)) {
         throw BuildError("Unsafe path rejected: " + file);
       }
-      sources_.emplace_back(file);
+      auto expanded = detail::ExpandGlob(file);
+      sources_.reserve(sources_.size() + expanded.size());
+      for (auto &path : expanded) {
+        sources_.push_back(std::move(path));
+      }
     }
     return *this;
   }
 
-  /// @brief Adds a single source file.
-  /// @param file Source file path to add.
+  /// @brief Adds a single source file or glob pattern.
+  /// @param file Source file path or glob pattern to add.
   /// @return Reference to this Project for chaining.
   Project &Source(std::string_view file) {
     if (!detail::IsPathSafe(file)) {
       throw BuildError("Unsafe path rejected: " + std::string(file));
     }
-    sources_.emplace_back(file);
+    auto expanded = detail::ExpandGlob(file);
+    for (auto &path : expanded) {
+      sources_.push_back(std::move(path));
+    }
     return *this;
   }
 

@@ -60,7 +60,7 @@ From now on, just run `./build`. If you modify `build.cpp`, it reconfigures itse
 
 ```cpp
 sb::Project("app")
-    .Sources({"main.cpp", "utils.cpp"})  // Add source files
+    .Sources({"src/**/*.cpp"})            // Add source files
     .IncludeDir("include")               // Add include directory (-I)
     .LibDir("libs")                      // Add library directory (-L)
     .LinkLib("pthread")                  // Link shared library (-l)
