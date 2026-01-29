@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.0.3
+/// @version 2.1.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -2208,6 +2208,83 @@ inline void Init(int argc, char **argv, const char *source_file) {
   if (!info.source_path.empty() && detail::SourceIsNewer(info)) {
     detail::RebuildAndExec(info);
   }
+}
+
+/// @brief Checks if a flag exists in the command line arguments.
+/// @param name The flag name to search for (e.g., "release", "--help").
+/// @return True if the flag is present, false otherwise.
+/// @details If the name starts with '-', it checks for an exact match.
+///          Otherwise, it checks for the exact name, "--name", and "-name".
+inline bool Flag(std::string_view name) {
+  const auto &args = detail::GetBuildInfo().original_args;
+  if (name.empty())
+    return false;
+
+  std::string check = std::string(name);
+  bool has_dash = (name[0] == '-');
+
+  for (const auto &arg : args) {
+    if (arg == check)
+      return true;
+    if (!has_dash) {
+      if (arg == "--" + check)
+        return true;
+      if (arg == "-" + check)
+        return true;
+    }
+  }
+  return false;
+}
+
+/// @brief Gets the value of a command line option.
+/// @param name The option name (e.g., "target", "--arch").
+/// @param default_value Value to return if option is not found.
+/// @return The option value or default_value.
+/// @details Handles "--name value" and "--name=value" formats.
+///          Also handles "name value" (e.g. subcommand style).
+inline std::string Option(std::string_view name,
+                          std::string_view default_value = "") {
+  const auto &args = detail::GetBuildInfo().original_args;
+  if (name.empty())
+    return std::string(default_value);
+
+  std::string key = std::string(name);
+  bool has_dash = (name[0] == '-');
+
+  for (size_t i = 1; i < args.size(); ++i) {
+    const auto &arg = args[i];
+
+    // Check for "--name=value" format
+    if (arg.find('=') != std::string::npos) {
+      std::string prefix = arg.substr(0, arg.find('='));
+      if (prefix == key) {
+        return arg.substr(arg.find('=') + 1);
+      }
+      if (!has_dash) {
+        if (prefix == "--" + key)
+          return arg.substr(arg.find('=') + 1);
+        if (prefix == "-" + key)
+          return arg.substr(arg.find('=') + 1);
+      }
+      continue;
+    }
+
+    // Check for "name value" format
+    bool match = (arg == key);
+    if (!match && !has_dash) {
+      match = (arg == "--" + key) || (arg == "-" + key);
+    }
+
+    if (match) {
+      if (i + 1 < args.size()) {
+        return args[i + 1];
+      } else {
+        return ""; // Found flag at end, no value
+      }
+    }
+  }
+
+  return std::string(default_value);
 }
 
 /// @class Project
