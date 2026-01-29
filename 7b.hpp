@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.6.0
+/// @version 2.7.0
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -3067,8 +3067,9 @@ public:
 
     progress.Finish();
 
-    std::string output = output_.empty() ? name_ : output_;
-    output = ApplyOutputExtension(output);
+    std::string output_name = output_.empty() ? name_ : output_;
+    output_name = ApplyOutputExtension(output_name);
+    std::filesystem::path output = cache.GetObjDir() / output_name;
 
     bool output_exists = platform::FileExists(output);
 
@@ -3103,14 +3104,17 @@ public:
   bool Clean() {
     Log("Cleaning " + name_ + "...");
 
-    std::string output = output_.empty() ? name_ : output_;
-    output = ApplyOutputExtension(output);
+    std::string output_name = output_.empty() ? name_ : output_;
+    output_name = ApplyOutputExtension(output_name);
+
+    Cache cache(SB_CACHE_DIR, profile_->Name(), toolchain_.get());
+    std::filesystem::path output = cache.GetObjDir() / output_name;
+
     if (platform::FileExists(output)) {
-      Verbose("Removing " + output);
+      Verbose("Removing " + output.string());
       platform::RemoveFile(output);
     }
 
-    Cache cache(SB_CACHE_DIR, profile_->Name(), toolchain_.get());
     return cache.Clean();
   }
 
