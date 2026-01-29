@@ -1760,15 +1760,6 @@ inline std::unique_ptr<Toolchain> Toolchain::Detect() {
   }
 #endif
 
-  // Detect the compiler used to build this script
-#if defined(_MSC_VER)
-  return std::make_unique<MSVCToolchain>();
-#elif defined(__clang__)
-  return std::make_unique<ClangToolchain>();
-#elif defined(__GNUC__)
-  return std::make_unique<GCCToolchain>();
-#endif
-
 #ifdef _WIN32
   // On Windows, prefer MSVC if available, then Clang, then GCC
   if (platform::CommandExists("cl")) {
