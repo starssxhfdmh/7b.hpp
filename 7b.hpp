@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.7.1
+/// @version 2.7.2
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -183,7 +183,11 @@ class DebugProfile : public Profile {
 public:
   std::string Name() const override { return "debug"; }
   std::vector<std::string> CxxFlags() const override {
+#ifdef _MSC_VER
+    return {"/Zi", "/Od", "/W4", "/EHsc", "/MDd"};
+#else
     return {"-g", "-O0", "-Wall", "-Wextra"};
+#endif
   }
 };
 
@@ -194,7 +198,11 @@ class ReleaseProfile : public Profile {
 public:
   std::string Name() const override { return "release"; }
   std::vector<std::string> CxxFlags() const override {
+#ifdef _MSC_VER
+    return {"/O2", "/DNDEBUG", "/W4", "/EHsc", "/MD"};
+#else
     return {"-O2", "-DNDEBUG", "-Wall"};
+#endif
   }
   std::vector<std::string> Defines() const override { return {"NDEBUG"}; }
 };
