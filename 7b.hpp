@@ -2,7 +2,7 @@
 /// @brief A single-header C++ build system.
 /// @author starssxhfdmh
 /// @copyright Copyright (c) 2026 starssxhfdmh. MIT License.
-/// @version 2.7.0
+/// @version 2.7.1
 ///
 /// @details
 /// 7b is a lightweight, header-only build system written in C++17.
@@ -3078,13 +3078,13 @@ public:
 
       switch (output_type_) {
       case OutputType::Executable:
-        link_ok = LinkExecutable(output, all_objects);
+        link_ok = LinkExecutable(output.string(), all_objects);
         break;
       case OutputType::StaticLib:
-        link_ok = LinkStaticLib(output, all_objects);
+        link_ok = LinkStaticLib(output.string(), all_objects);
         break;
       case OutputType::SharedLib:
-        link_ok = LinkSharedLib(output, all_objects);
+        link_ok = LinkSharedLib(output.string(), all_objects);
         break;
       }
 
